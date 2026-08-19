@@ -14,7 +14,16 @@ from typing import Any
 
 
 class ProviderError(Exception):
-    """Any failure talking to a provider (HTTP error, bad response, no creds)."""
+    """Any failure talking to a provider (HTTP error, bad response, no creds).
+
+    ``status`` carries the HTTP status when there was one, so callers can tell
+    "this is not a model server" from "this is one and it wants a key" without
+    matching on the message text.
+    """
+
+    def __init__(self, *args, status: int = None):
+        super().__init__(*args)
+        self.status = status
 
 
 # Optional wire tap for diagnosing model behaviour: called with
@@ -110,7 +119,7 @@ def _send(req: urllib.request.Request, url: str, timeout: float) -> dict[str, An
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")
-        raise ProviderError(f"HTTP {e.code} from {url}: {body[:800]}") from None
+        raise ProviderError(f"HTTP {e.code} from {url}: {body[:800]}", status=e.code) from None
     except urllib.error.URLError as e:
         # A connect timeout arrives wrapped in URLError; a *read* timeout does
         # not, so it is handled separately below.

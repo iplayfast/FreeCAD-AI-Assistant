@@ -259,6 +259,15 @@ def discover_local_servers(timeout: float = 1.0) -> list:
         url = f"http://127.0.0.1:{port}/v1"
         try:
             resp = get_json(f"{url}/models", timeout=timeout)
+        except ProviderError as e:
+            # 401/403 means we found a model server that wants a credential —
+            # Unsloth Studio's front door is one. Dropping those made its whole
+            # catalogue invisible rather than merely locked, which reads as "the
+            # scan is broken". Report it and let the user supply the key.
+            if e.status in (401, 403):
+                return {"port": port, "base_url": url, "models": [],
+                        "needs_key": True, "name": names.get(port, "")}
+            return None
         except Exception:
             return None                            # not a model server, or not answering
         entries = resp.get("data") or resp.get("models") or []
@@ -269,7 +278,7 @@ def discover_local_servers(timeout: float = 1.0) -> list:
         if not models or any(m.startswith("/") for m in models):
             return None
         return {"port": port, "base_url": url, "models": sorted(models),
-                "name": names.get(port, "")}
+                "needs_key": False, "name": names.get(port, "")}
 
     # Concurrently, because most of these ports are not model servers and the
     # cost of finding that out is the full timeout each: 5s serially, ~1s here.
@@ -1057,12 +1066,13 @@ def demo() -> None:
         real_listeners, real_names = m._loopback_listeners, m._listener_names
         try:
             m._loopback_listeners = lambda: [(11434, "1"), (8888, "2"), (40129, "3"),
-                                             (RPC_PORT, "4"), (22, "5")]
-            m._listener_names = lambda listeners: {11434: "ollama", 40129: "llama-server"}
+                                             (RPC_PORT, "4"), (22, "5"), (9999, "6")]
+            m._listener_names = lambda listeners: {11434: "ollama", 40129: "llama-server",
+                                                   8888: "unsloth"}
             bodies = {
                 11434: {"data": [{"id": "qwen3.8:latest"}]},          # a real server
-                8888: {"data": []},                                   # loaded nothing
                 40129: {"data": [{"id": "/var/blobs/sha256-abc"}]},   # a back end
+                9999: {"data": []},                                   # loaded nothing
                 RPC_PORT: {"data": [{"id": "should-never-be-asked"}]},
             }
             asked = []
@@ -1070,15 +1080,21 @@ def demo() -> None:
             def fake_get_json(url, headers=None, timeout=None):
                 port = int(url.split(":")[2].split("/")[0])
                 asked.append(port)
+                if port == 8888:       # a model server that wants a credential
+                    raise ProviderError("HTTP 401", status=401)
                 if port not in bodies:
                     raise ProviderError("refused")
                 return bodies[port]
 
             m.get_json = fake_get_json
-            servers = m.discover_local_servers()
-            assert [s["port"] for s in servers] == [11434], servers
-            assert servers[0]["models"] == ["qwen3.8:latest"], servers
-            assert servers[0]["name"] == "ollama", servers
+            servers = {s["port"]: s for s in m.discover_local_servers()}
+            assert sorted(servers) == [8888, 11434], servers
+            assert servers[11434]["models"] == ["qwen3.8:latest"], servers
+            assert servers[11434]["name"] == "ollama", servers
+            assert servers[11434]["needs_key"] is False, servers
+            # 401 is kept, and flagged, rather than dropped as "not a server".
+            assert servers[8888]["needs_key"] is True, servers
+            assert servers[8888]["models"] == [], servers
             assert RPC_PORT not in asked, "must not probe our own XML-RPC port"
         finally:
             m._loopback_listeners, m._listener_names = real_listeners, real_names

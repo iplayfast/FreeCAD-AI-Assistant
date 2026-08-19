@@ -364,16 +364,24 @@ class AIChatPanel(QDockWidget):
         for server in servers:
             if _same_endpoint(server["base_url"]) in known:
                 continue                  # already offered, e.g. Ollama's preset
+            needs_key = server.get("needs_key")
             label = f"{server['name'] or 'local server'} :{server['port']}"
+            if needs_key:
+                label += " (needs key)"
             index = len(self._services)   # the separator sits here; push it down
             self._services[label] = {
                 "provider": "openai_compat",
                 "base_url": server["base_url"],
-                "key_from": None,         # local, no credential
+                # None hides the key row; "" shows it and asks for one. A local
+                # server that answered 401 is the second kind.
+                "key_from": "" if needs_key else None,
                 "models": server["models"],
             }
             self._service.insertItem(index, label)
-            added.append(f"{label} — {len(server['models'])} model(s)")
+            added.append(
+                f"{label} — needs an API key, then press Load" if needs_key
+                else f"{label} — {len(server['models'])} model(s)"
+            )
         if added:
             self._say_system("Local model servers found: " + "; ".join(added) + ".")
         else:
