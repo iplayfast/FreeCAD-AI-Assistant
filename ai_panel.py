@@ -11,6 +11,7 @@ FreeCAD, and every tool call is marshalled back onto the GUI thread via
 """
 
 import json
+import re
 
 try:
     from PySide2.QtWidgets import (
@@ -100,6 +101,27 @@ class _ModelLoader(QThread):
             self.failed.emit(str(e))
             return
         self.loaded.emit(models)
+
+
+def _profile_that_fits(message: str) -> str:
+    """The largest tool profile whose schema leaves room in the reported window.
+
+    The server says how big its window is when it refuses; that is enough to name
+    the profile to switch to rather than leaving the user to try each in turn.
+    Budget is half the window, since the schema is resent every step and the
+    conversation and tool results have to live in the other half.
+    """
+    found = re.search(r"context size \((\d+)", message) or re.search(r'"n_ctx":\s*(\d+)', message)
+    if not found:
+        return ""
+    budget = int(found.group(1)) / 2
+    best = ""
+    for name in PROFILES:
+        # ~4 characters per token: rough, but the gaps between profiles are wide.
+        if len(json.dumps(describe_tools(name))) / 4 <= budget:
+            if not best or len(describe_tools(name)) > len(describe_tools(best)):
+                best = name
+    return best
 
 
 def _same_endpoint(url: str) -> str:
@@ -684,10 +706,13 @@ class AIChatPanel(QDockWidget):
         """
         low = message.lower()
         if "context" in low and ("exceed" in low or "too long" in low or "larger" in low):
+            fits = _profile_that_fits(message)
             return (
-                "The request is bigger than that server's context window. The tool "
-                "schema is most of it: narrow Tools above — 'Core only' describes 11 "
-                "tools rather than 43 — or restart the server with a larger -c."
+                "The request is bigger than that server's context window, so it was "
+                "refused before generating anything — the tool schema is most of it. "
+                + (f"Set Tools to {fits!r}, which fits. " if fits else "Narrow Tools above. ")
+                + "Or give the server a bigger context: llama.cpp's -c, and note "
+                "--parallel N divides that window between N slots."
             )
         if "model" in low and "not found" in low:
             return (
