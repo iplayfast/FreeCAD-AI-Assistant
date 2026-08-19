@@ -800,7 +800,14 @@ def AI(prompt: str) -> None:
     def run_tool(name: str, arguments: dict):
         return dispatch_to_gui(lambda: call_tool(name, arguments), timeout=_TOOL_TIMEOUT)
 
-    session = AgentSession(provider, run_tool=run_tool)
+    # Same tool profile as the panel: the two faces sharing one registry is the
+    # point of it, and that includes agreeing on how much of it to describe.
+    from rpc_server.tools import describe_tools
+
+    session = AgentSession(
+        provider, run_tool=run_tool,
+        tools=describe_tools(load_settings().get("ai_tool_profile")),
+    )
     _emit(f"[you] {prompt}")
 
     def worker() -> None:

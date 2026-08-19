@@ -111,6 +111,33 @@ which it found, so a missing one is diagnosable rather than merely absent.
 
 `describe_tools()` returns the same list machine-readably.
 
+### Tool profiles
+
+The full schema is about 27,000 characters — roughly 6,700 tokens — and it is
+re-sent on **every step** of every turn. That is a fifth of a 32k context before
+anything is said, and more than the entire window of a local server started with
+`-c 2048`. On small local models that is not overhead, it is the reason nothing
+works.
+
+The **Tools** dropdown picks how much to describe:
+
+| Profile | Tools | ≈ tokens |
+|---|--:|--:|
+| Everything | 43 | 6700 |
+| Core only | 11 | 1600 |
+| PartDesign | 18 | 2800 |
+| PartDesign + inspection | 26 | 3900 |
+| BIM | 18 | 2800 |
+| Core + extras | 21 | 3100 |
+
+Every profile includes core — a session that cannot create or save a document is
+not a session. A tool's category follows the module that defines it, so new tools
+are grouped without being listed anywhere.
+
+Profiles only affect what is *advertised*. `call_tool` always sees the whole
+registry, so narrowing a profile can never break a caller that asks for a tool by
+name, and the MCP face is unaffected.
+
 ## MCP / XML-RPC
 
 An XML-RPC server on `127.0.0.1:9875`, started from the toolbar or automatically

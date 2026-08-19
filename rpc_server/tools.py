@@ -31,9 +31,47 @@ class Tool:
     description: str
     parameters: dict[str, Any]  # JSON Schema (an object schema) for the arguments
     handler: Callable[..., Any]
+    category: str = "core"
 
 
 _REGISTRY: dict[str, Tool] = {}
+
+# The whole schema is ~27,000 characters and is re-sent on every step of every
+# turn. That is a fifth of a 32k context before anything is said, and more than
+# the entire window of a local server started with -c 2048 — which is not a
+# tidiness problem, it is why small local models cannot use this addon at all.
+# Profiles let a session advertise a subset. Nothing here restricts what can be
+# *called*: call_tool always sees the full registry, so a tool that is not
+# advertised still works if something asks for it by name.
+
+# Which category a tool lands in follows the module that defines it, so a new
+# tool is grouped correctly without being listed anywhere. The exception is the
+# document/object module, which is half essentials and half occasional
+# machinery; naming the occasional half is less churn than annotating the rest,
+# and anything new there defaults to "core", i.e. visible in every profile.
+_MODULE_CATEGORIES = {
+    "tool_handlers": "core",
+    "partdesign_handlers": "partdesign",
+    "inspect_handlers": "inspect",
+    "bim_handlers": "bim",
+}
+
+_EXTRAS = {
+    "create_text_label", "get_active_screenshot", "get_dependency_graph",
+    "export_file", "execute_code_async", "run_fem_analysis",
+    "insert_part_from_library", "reload_document", "read_file", "get_parts_list",
+}
+
+# None means "no filter". A profile always includes core: a session that cannot
+# create or save a document is not a working session.
+PROFILES: dict[str, set | None] = {
+    "Everything": None,
+    "Core only": {"core"},
+    "PartDesign": {"core", "partdesign"},
+    "PartDesign + inspection": {"core", "partdesign", "inspect"},
+    "BIM": {"core", "bim"},
+    "Core + extras": {"core", "extras"},
+}
 
 
 def register(name: str, description: str, parameters: dict[str, Any]) -> Callable:
@@ -50,7 +88,9 @@ def register(name: str, description: str, parameters: dict[str, Any]) -> Callabl
     def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
         if name in _REGISTRY:
             raise ValueError(f"tool '{name}' is already registered.")
-        _REGISTRY[name] = Tool(name, description, parameters, fn)
+        module = (fn.__module__ or "").rsplit(".", 1)[-1]
+        category = "extras" if name in _EXTRAS else _MODULE_CATEGORIES.get(module, "core")
+        _REGISTRY[name] = Tool(name, description, parameters, fn, category)
         return fn
 
     return deco
@@ -82,17 +122,23 @@ def get_tool(name: str) -> Tool | None:
     return _REGISTRY.get(name)
 
 
-def describe_tools() -> list[dict[str, Any]]:
+def describe_tools(profile: str = None) -> list[dict[str, Any]]:
     """The wire-facing description consumed by AI providers and the MCP server.
 
     Shape (``name``/``description``/``parameters``) is intentionally the common
     denominator across the Anthropic tool spec, the OpenAI function/tool spec,
     and MCP's ``inputSchema`` — each adapter maps this into its own envelope.
+
+    ``profile`` names a subset from ``PROFILES``; omitted, or unknown, means the
+    whole registry. Unknown falls back to everything rather than raising, because
+    a stale profile in a settings file should cost prompt size, not a dead panel.
     """
     load_handlers()
+    allowed = PROFILES.get(profile, None) if profile else None
     return [
         {"name": t.name, "description": t.description, "parameters": t.parameters}
         for t in _REGISTRY.values()
+        if allowed is None or t.category in allowed
     ]
 
 
@@ -254,6 +300,25 @@ def demo() -> None:
             assert False, "expected the error to propagate"
         except RuntimeError:
             pass
+
+        # Profiles filter what is advertised, never what can be run.
+        @register("only_padded", "Category comes from the defining module.",
+                  {"type": "object", "properties": {}})
+        def _padded() -> dict:
+            return {}
+
+        _REGISTRY["only_padded"] = Tool(
+            "only_padded", "d", {"type": "object", "properties": {}},
+            _REGISTRY["only_padded"].handler, "partdesign",
+        )
+        assert {t["name"] for t in describe_tools()} >= {"echo", "only_padded"}
+        assert "only_padded" not in {t["name"] for t in describe_tools("Core only")}
+        assert "only_padded" in {t["name"] for t in describe_tools("PartDesign")}
+        # ...and an unadvertised tool still runs, so narrowing a profile can never
+        # break a caller that asks for one by name.
+        assert call_tool("only_padded", {}) == {}
+        # An unknown profile means everything, not nothing.
+        assert describe_tools("no such profile") == describe_tools()
 
         print("tools.py demo: all checks passed")
     finally:

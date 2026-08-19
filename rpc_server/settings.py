@@ -25,6 +25,9 @@ _DEFAULT_SETTINGS = {
     # Seconds to wait for one completion. Minutes rather than seconds because a
     # local model may have to be paged into memory before the first token.
     "ai_timeout": 600,
+    # Which slice of the tool registry to advertise; see tools.PROFILES. The full
+    # set is ~6700 tokens re-sent every step, which small local models cannot fit.
+    "ai_tool_profile": "Everything",
 }
 
 

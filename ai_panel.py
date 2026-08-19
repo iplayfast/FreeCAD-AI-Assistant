@@ -33,7 +33,7 @@ from rpc_server.agent import AgentSession
 from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
 from rpc_server.providers import ProviderError, make_provider
 from rpc_server.settings import load_settings, save_settings
-from rpc_server.tools import call_tool
+from rpc_server.tools import PROFILES, call_tool, describe_tools
 
 # The provider table and model lookup live with the setup wizard; sharing them
 # keeps the panel and the AI() console offering the same services.
@@ -221,6 +221,16 @@ class AIChatPanel(QDockWidget):
         self._detect_btn.clicked.connect(self._on_detect)
         form.addRow("Service:", self._row(self._service, self._detect_btn))
 
+        self._profile_label = QLabel("Tools:")
+        self._profile = QComboBox()
+        self._profile.addItems(list(PROFILES))
+        self._profile.setToolTip(
+            "How much of the tool registry to describe to the model. The full "
+            "set is resent on every step, so a narrower profile is what makes "
+            "a small local context window usable."
+        )
+        form.addRow(self._profile_label, self._profile)
+
         self._cmd_label = QLabel("Command:")
         self._cmd = QLineEdit()
         self._cmd.setPlaceholderText("claude")
@@ -284,6 +294,8 @@ class AIChatPanel(QDockWidget):
         if model and self._model.findText(model) < 0:
             self._model.addItem(model)
         self._model.setCurrentText(model)
+        wanted = s.get("ai_tool_profile", "Everything")
+        self._profile.setCurrentIndex(max(0, self._profile.findText(wanted)))
         self._on_service_changed()
 
     def _current_cli(self):
@@ -300,14 +312,16 @@ class AIChatPanel(QDockWidget):
             # any of that here would imply this panel supplies it, so hide the
             # rows rather than grey them out. The only decision left is what to run.
             for w in (self._url_label, self._url, self._key_label, self._key,
-                      self._model_label, self._model_row):
+                      self._model_label, self._model_row,
+                      self._profile_label, self._profile):
                 w.setVisible(False)
             self._save_btn.setText("Launch")
             if cli["cmd"]:
                 self._cmd.setText(cli["cmd"])
             return
 
-        for w in (self._model_label, self._model_row):
+        for w in (self._model_label, self._model_row,
+                  self._profile_label, self._profile):
             w.setVisible(True)
         self._save_btn.setText("Save")
         preset = self._services[self._service.currentText()]
@@ -329,6 +343,7 @@ class AIChatPanel(QDockWidget):
             "ai_base_url": preset["base_url"] or self._url.text().strip(),
             "ai_api_key": self._key.text().strip(),
             "ai_model": self._model.currentText().strip(),
+            "ai_tool_profile": self._profile.currentText(),
         }
 
     def _on_save_settings(self):
@@ -530,7 +545,13 @@ class AIChatPanel(QDockWidget):
         # Nothing drains the queue unless the pump is up, and the panel has to
         # work with the RPC server switched off.
         ensure_gui_pump()
-        self._session = AgentSession(provider, run_tool=self._run_tool)
+        profile = settings.get("ai_tool_profile")
+        tools = describe_tools(profile)
+        self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools)
+        self._say_system(
+            f"Describing {len(tools)} of {len(describe_tools())} tools to the "
+            f"model ({profile})."
+        )
         return self._session
 
     def _run_tool(self, name: str, arguments: dict):
