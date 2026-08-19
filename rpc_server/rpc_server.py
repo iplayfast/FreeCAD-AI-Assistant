@@ -359,7 +359,10 @@ def start_rpc_server(port=RPC_PORT):
     rpc_server_instance.register_instance(FreeCADRPC())
 
     def server_loop():
-        FreeCAD.Console.PrintMessage(f"RPC Server started at {host}:{port}\n")
+        # No announcement here. Every caller already prints what this function
+        # returns, so saying it again logged one event as two lines - and said it
+        # from a worker thread, which is not where FreeCAD.Console wants to be
+        # called from.
         rpc_server_instance.serve_forever()
 
     rpc_server_thread = threading.Thread(target=server_loop, daemon=True)
