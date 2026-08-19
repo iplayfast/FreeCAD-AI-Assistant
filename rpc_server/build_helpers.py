@@ -153,12 +153,23 @@ def originPlane(body, role: str = "XY_Plane"):
     return None
 
 
+def _suffixed(name: str, suffix: str) -> str:
+    """``name`` plus ``suffix``, unless it already ends that way.
+
+    The suffix convention is deliberate, but a caller that passes "Sketch"
+    because the tool asked for a sketch name got "SketchSketch" — a real object
+    with a name nobody meant, which then has to be guessed at for every later
+    call. Doubling helps no one.
+    """
+    return name if name.lower().endswith(suffix.lower()) else name + suffix
+
+
 def createSketch(body, name: str = ""):
     """Add a sketch to ``body``, attached to that body's XY plane.
 
     ``name`` gets a "Sketch" suffix, matching the GearWorkBench convention.
     """
-    sketch = body.Document.addObject("Sketcher::SketchObject", name + "Sketch")
+    sketch = body.Document.addObject("Sketcher::SketchObject", _suffixed(name, "Sketch"))
     body.addObject(sketch)
 
     plane = originPlane(body)
@@ -253,7 +264,7 @@ def createPad(body, sketch, height: float, name: str = "", symmetric: bool = Fal
     False — logs a deprecation warning. FreeCAD 1.1+ has ``SideType``; older
     builds get the sketch-offset trick GearWorkBench used instead.
     """
-    pad = body.Document.addObject("PartDesign::Pad", name + "Pad")
+    pad = body.Document.addObject("PartDesign::Pad", _suffixed(name, "Pad"))
     body.addObject(pad)
     pad.Profile = sketch
     pad.Length = height
@@ -290,7 +301,7 @@ def createPocket(
 
     ``through_all=True`` ignores ``height`` and cuts the full depth.
     """
-    pocket = body.Document.addObject("PartDesign::Pocket", name + "Pocket")
+    pocket = body.Document.addObject("PartDesign::Pocket", _suffixed(name, "Pocket"))
     body.addObject(pocket)
     pocket.Profile = sketch
     pocket.Length = height
@@ -342,7 +353,7 @@ def createPolar(body, feature, count: int, angle: float = 360, sketch=None, name
             "The signature is createPolar(body, feature, count, angle=360)."
         )
 
-    polar = body.newObject("PartDesign::PolarPattern", name + "Polar")
+    polar = body.newObject("PartDesign::PolarPattern", _suffixed(name, "Polar"))
     polar.Axis = (sketch, ["N_Axis"])
     polar.Angle = angle
     polar.Occurrences = count

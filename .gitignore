@@ -19,3 +19,4 @@ AGENT_BRIEFING.md
 # The wiki mirror is what search_wiki reads; clone it yourself and symlink it.
 dimensions.txt
 FreeCAD-Documentation-Project
+.gstack/
