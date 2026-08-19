@@ -19,12 +19,12 @@ try:
         QSizePolicy, QTextBrowser, QVBoxLayout, QWidget, QDockWidget,
     )
     from PySide2.QtCore import QEvent, QObject, Qt, QThread, Signal
-    from PySide2.QtGui import QTextCursor
+    from PySide2.QtGui import QPalette, QTextCursor
 except ImportError:
     from PySide.QtGui import (
         QComboBox, QFormLayout, QGroupBox,
         QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-        QSizePolicy, QTextBrowser, QTextCursor, QVBoxLayout, QWidget,
+        QPalette, QSizePolicy, QTextBrowser, QTextCursor, QVBoxLayout, QWidget,
         QDockWidget,
     )
     from PySide.QtCore import QEvent, QObject, Qt, QThread, Signal
@@ -140,6 +140,21 @@ class AIChatPanel(QDockWidget):
         self._chat = QTextBrowser()
         self._chat.setOpenExternalLinks(False)
         self._chat.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # The transcript is read-only, but by default it renders on the same
+        # Base colour as the input box below it, so the two read as one field and
+        # you end up typing into the transcript and wondering why nothing appears.
+        # Painting it on Window recesses it the way every other read-only view in
+        # FreeCAD is recessed. Palette roles, not literal colours, so this still
+        # holds on a light theme.
+        recessed = self._chat.palette()
+        base = recessed.color(QPalette.Base)
+        # Derived from Base rather than set to Window: on this theme Window and
+        # Base are both near-black, so borrowing Window changed nothing visible.
+        # Going lighter on a dark theme and darker on a light one always moves.
+        recessed.setColor(
+            QPalette.Base, base.lighter(180) if base.lightness() < 128 else base.darker(108)
+        )
+        self._chat.setPalette(recessed)
         layout.addWidget(self._chat, stretch=1)
 
         layout.addWidget(self._build_input_box())
@@ -376,12 +391,21 @@ class AIChatPanel(QDockWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
+        # A titled frame, because the transcript above and this box render on the
+        # same colour under most themes and are otherwise two identical dark
+        # rectangles — which is how you end up typing into the transcript.
+        # A border is a cue that survives any palette; a shade is not.
+        ask = QGroupBox("Your message")
+        ask_layout = QVBoxLayout(ask)
+        ask_layout.setContentsMargins(4, 4, 4, 4)
+
         self._input = QPlainTextEdit()
         self._input.setPlaceholderText("Ask FreeCAD anything… (Ctrl+Enter to send)")
         self._input.setMaximumHeight(80)
         self._filter = _SendFilter(self._on_send)
         self._input.installEventFilter(self._filter)
-        layout.addWidget(self._input)
+        ask_layout.addWidget(self._input)
+        layout.addWidget(ask)
 
         self._send_btn = QPushButton("Send")
         self._send_btn.clicked.connect(self._on_send)
