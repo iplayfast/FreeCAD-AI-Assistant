@@ -8,6 +8,13 @@ import FreeCAD
 
 _SETTINGS_FILENAME = "freecad_mcp_settings.json"
 
+# Where the RPC server listens, and so what external agent CLIs are told to
+# connect to (see console.write_briefing). Kept here rather than in
+# rpc_server.py because that module imports FreeCADGui and cannot be loaded
+# outside the GUI, while the briefing has to name the port either way.
+RPC_HOST = "127.0.0.1"
+RPC_PORT = 9875
+
 _DEFAULT_SETTINGS = {
     "auto_start_rpc": False,
     # AI console (the AI(...) function): provider selection + credentials.

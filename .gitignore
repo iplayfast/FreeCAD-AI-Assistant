@@ -6,8 +6,8 @@ __pycache__/
 # and the provider layer in rpc_server/ uses stdlib urllib, so nothing needs it.
 vendor/
 
-# Runtime output, not source.
-ai_assistant.log
+# Regenerated on every external-CLI launch to match the running session.
+AGENT_BRIEFING.md
 
 # Test documents the assistant left behind at the addon root.
 *.FCStd

@@ -26,7 +26,7 @@ from rpc_server.object_factory import create_object_gui
 from rpc_server.parts_library import get_parts_list, insert_part_from_library
 from rpc_server.property_mapper import Object, set_object_property
 from rpc_server.serialize import serialize_object
-from rpc_server.settings import load_settings, save_settings
+from rpc_server.settings import RPC_HOST, RPC_PORT, load_settings, save_settings
 from rpc_server.view_manager import save_active_screenshot
 
 rpc_server_thread = None
@@ -344,7 +344,7 @@ class FreeCADRPC:
         return True
 
 
-def start_rpc_server(port=9875):
+def start_rpc_server(port=RPC_PORT):
     # Bound to loopback only: this server runs exec() of arbitrary Python, so it
     # must never be reachable off the local machine.
     global rpc_server_thread, rpc_server_instance
@@ -352,7 +352,7 @@ def start_rpc_server(port=9875):
     if rpc_server_instance:
         return "RPC Server already running."
 
-    host = "127.0.0.1"
+    host = RPC_HOST
     rpc_server_instance = SimpleXMLRPCServer(
         (host, port), allow_none=True, logRequests=False
     )

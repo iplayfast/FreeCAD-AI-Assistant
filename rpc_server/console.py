@@ -43,7 +43,10 @@ _PRESETS = {
         "provider": "openai_compat",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "key_from": "aistudio.google.com/apikey",
-        "cli": {"cmd": "gemini", "name": "Gemini CLI", "config": "~/.gemini/settings.json"},
+        # prompt_flag: gemini takes its opening prompt behind -i; claude and
+        # codex take it positionally, which is the default here.
+        "cli": {"cmd": "gemini", "name": "Gemini CLI", "config": "~/.gemini/settings.json",
+                "prompt_flag": "-i"},
     },
     "OpenAI": {
         "provider": "openai_compat",
@@ -64,6 +67,16 @@ _PRESETS = {
 }
 
 _DEFAULT_MODEL_CHOICE = "(provider default)"
+
+# The dropdown row for "run whatever command I type", and the file plus opening
+# line that tell whatever gets launched what it is connected to.
+_SHELL_CHOICE = "Shell command (external CLI)"
+_BRIEFING_NAME = "AGENT_BRIEFING.md"
+_BRIEFING_PROMPT = (
+    "Read AGENT_BRIEFING.md in this directory before doing anything else. It "
+    "describes the live FreeCAD session you are driving, the port to reach it "
+    "on, and the tools you can call."
+)
 
 _KEYS_URL = "https://console.anthropic.com/settings/keys"
 
@@ -137,43 +150,194 @@ def _has_freecad_mcp(config_path: str) -> bool:
         return False
 
 
-def _launch_cli(cli: dict) -> bool:
+def _addon_dir() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def external_clis() -> dict:
+    """Label -> cli dict for every agent CLI in ``_PRESETS`` that is installed.
+
+    The panel offers these in the same dropdown as the API-key services. They are
+    the other half of the choice: a local LLM answers *inside* the panel, while
+    these run in their own terminal on the user's existing subscription and reach
+    FreeCAD from outside. Only installed ones are listed — offering to launch a
+    CLI that isn't there is a dead end. The free-form row is always last, so any
+    other command can be pointed at the same interface.
+    """
+    import shutil
+
+    choices = {
+        f"{p['cli']['name']} (external CLI)": p["cli"]
+        for p in _PRESETS.values()
+        if p.get("cli") and shutil.which(p["cli"]["cmd"])
+    }
+    choices[_SHELL_CHOICE] = {"cmd": "", "name": "shell command", "config": ""}
+    return choices
+
+
+def write_briefing() -> str:
+    """Write the file an external agent CLI reads to learn what it is driving.
+
+    A CLI launched from the panel arrives knowing nothing: it has to be told that
+    a live FreeCAD is on the other end, which port reaches it, and what it may
+    call. A file rather than an argv prompt because the tool list runs to a few
+    thousand characters — and because the user can read it too when a run goes
+    sideways. Regenerated on every launch, so the tool list can never go stale.
+    """
+    from rpc_server import tools
+    from rpc_server.settings import RPC_HOST, RPC_PORT
+
+    url = f"http://{RPC_HOST}:{RPC_PORT}"
+    try:
+        # GUI-only (it imports FreeCADGui), which is where this is called for
+        # real; headless, the port above is still the right thing to publish.
+        from rpc_server import rpc_server as _rpc
+    except Exception:
+        running, methods = False, []
+    else:
+        running = _rpc.rpc_server_instance is not None
+        methods = sorted(
+            m for m in dir(_rpc.FreeCADRPC)
+            if not m.startswith("_") and callable(getattr(_rpc.FreeCADRPC, m))
+        )
+    try:
+        registry = tools.describe_tools()
+    except Exception as e:      # a broken handler must not block the launch
+        registry = []
+        tool_note = f"(could not list tools: {e})"
+    else:
+        tool_note = ""
+
+    lines = [
+        "# FreeCAD AI Workbench — briefing for an external agent",
+        "",
+        "You were launched from the AI Assistant panel of a **running FreeCAD",
+        "session**, and your job is to drive that session for the user. This file",
+        "describes the interface you have to it. It is generated at launch, so it",
+        "matches the FreeCAD that is running right now.",
+        "",
+        "## Reaching FreeCAD",
+        "",
+        "Preferred: the `freecad` MCP server, if it is registered with you. Its",
+        "tools are the ones listed below and need no setup beyond that entry.",
+        "",
+        f"Otherwise, talk to the XML-RPC server on **{url}** (loopback only).",
+        f"Status at launch: **{'RUNNING' if running else 'NOT RUNNING'}**.",
+        "" if running else
+        "It is off: the user starts it with 'Start RPC Server' on the AI Assistant\n"
+        "toolbar in FreeCAD. Nothing below will answer until they do — say so\n"
+        "rather than guessing at another way in.",
+        "",
+        "```python",
+        "import xmlrpc.client",
+        f'fc = xmlrpc.client.ServerProxy("{url}", allow_none=True)',
+        'fc.ping()',
+        'fc.list_documents()',
+        'fc.call_tool("create_box", {"length": 10, "width": 10, "height": 10})',
+        "```",
+        "",
+        "### XML-RPC methods",
+        "",
+        ", ".join(f"`{m}`" for m in methods) or "_(list unavailable at generation time)_",
+        "",
+        "`call_tool(name, arguments)` is the one that matters — it reaches the same",
+        "registry the built-in panel uses, so everything below is available through",
+        "it. `describe_tools()` returns the same list machine-readably.",
+        "",
+        f"## Tools ({len(registry)}) {tool_note}".rstrip(),
+        "",
+    ]
+    for tool in sorted(registry, key=lambda t: t["name"]):
+        summary = " ".join((tool.get("description") or "").split())
+        if len(summary) > 160:
+            summary = summary[:157].rstrip() + "..."
+        lines.append(f"- **{tool['name']}** — {summary}")
+
+    lines += [
+        "",
+        "## Rules",
+        "",
+        "- `execute_code` runs arbitrary Python inside the user's live FreeCAD.",
+        "  There is no sandbox and no confirmation step. Use it for CAD work, not",
+        "  for touching the filesystem or the network.",
+        "- Each `call_tool` is wrapped in one undo step, so the user can back out",
+        "  of anything you do one action at a time. Prefer several small calls to",
+        "  one large `execute_code` for that reason alone.",
+        "- The user is watching the same model in the GUI. Say what you changed.",
+        "- Ask before deleting or overwriting anything you did not create.",
+        "",
+    ]
+
+    path = os.path.join(_addon_dir(), _BRIEFING_NAME)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return path
+
+
+def _launch_cli(cli: dict) -> tuple:
     """Open a terminal running an agent CLI in the addon directory.
 
-    These CLIs reach this addon through the ``freecad`` MCP server, so they need
-    no API key of their own — they drive FreeCAD over the same RPC server that
-    is already running. That only holds if the MCP server is registered with
-    *that* CLI, so say so when it isn't.
+    These CLIs reach this addon through the ``freecad`` MCP server or the RPC
+    port, so they need no API key of their own — they drive FreeCAD over the same
+    server that is already running. That only holds if the MCP server is
+    registered with *that* CLI, so say so when it isn't.
+
+    Returns ``(ok, message)`` and also prints the message, because both callers
+    want it: the wizard writes to the console, the panel into the chat log.
     """
+    import shlex
     import shutil
     import subprocess
 
+    def done(ok: bool, message: str) -> tuple:
+        print(f"[AI_config] {message}")
+        return ok, message
+
     cmd, name = cli["cmd"], cli["name"]
-    if not shutil.which(cmd):
-        print(f"[AI_config] `{cmd}` not found on PATH — install {name} first.")
-        return False
+    if not cmd:
+        return done(False, "no command given.")
+    argv = shlex.split(cmd)
+    if not shutil.which(argv[0]):
+        return done(False, f"`{argv[0]}` not found on PATH — install {name} first.")
 
-    if not _has_freecad_mcp(cli["config"]):
-        print(f"[AI_config] warning: no 'freecad' MCP server found in {cli['config']},")
-        print(f"            so {name} will not be able to drive FreeCAD until you add one.")
+    notes = []
+    if cli.get("config") and not _has_freecad_mcp(cli["config"]):
+        notes.append(
+            f"no 'freecad' MCP server in {cli['config']}, so {name} must use the "
+            "RPC port described in the briefing"
+        )
 
-    addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    briefing = write_briefing()
+    # The briefing is handed over two ways because no single one reaches every
+    # CLI: an opening prompt for the ones whose flag we know, and an env var that
+    # any command can read.
+    if cli.get("prompt_flag"):
+        argv += [cli["prompt_flag"], _BRIEFING_PROMPT]
+    elif cli.get("config"):     # a known CLI: takes its opening prompt positionally
+        argv.append(_BRIEFING_PROMPT)
+    else:
+        notes.append(f"read $FREECAD_AI_BRIEFING ({os.path.basename(briefing)})")
+
+    env = {**os.environ, "FREECAD_AI_BRIEFING": briefing}
+    addon_dir = _addon_dir()
     for term, flag in _TERMINALS:
         if not shutil.which(term):
             continue
-        argv = [term, flag, cmd] if flag else [term, cmd]
+        full = [term, flag, *argv] if flag else [term, *argv]
         try:
-            subprocess.Popen(argv, cwd=addon_dir)
+            subprocess.Popen(full, cwd=addon_dir, env=env)
         except OSError as e:
             print(f"[AI_config] could not start {term}: {e}")
             continue
-        print(f"[AI_config] launched {name} in {term} ({addon_dir})")
-        return True
+        suffix = f" ({'; '.join(notes)})" if notes else ""
+        return done(True, f"launched {name} in {term}{suffix}")
 
     # ponytail: no terminal found (macOS/Windows, or a bare WM) — tell them the
     # command instead of shipping a per-platform launcher nobody asked for.
-    print(f"[AI_config] no terminal emulator found. Run this yourself:\n    cd {addon_dir} && {cmd}")
-    return False
+    return done(
+        False,
+        f"no terminal emulator found. Run this yourself:\n    cd {addon_dir} && {cmd}",
+    )
 
 
 def _open_keys_page() -> None:
@@ -547,7 +711,11 @@ def demo() -> None:
     Needs FreeCAD (settings.py imports it), so run it from the Python console:
       from rpc_server.console import demo; demo()
     """
+    import shutil
+
     import rpc_server.console as m
+    from rpc_server import tools
+    from rpc_server.settings import RPC_HOST, RPC_PORT
 
     real = (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
             m._offer_no_key, m._launch_cli, m._open_keys_page)
@@ -714,6 +882,21 @@ def demo() -> None:
         assert m._has_freecad_mcp("~/.claude.json") is True
         assert m._has_freecad_mcp(__file__) is True          # this file says "freecad"
         assert m._has_freecad_mcp("/nonexistent/xyz.json") is False
+
+        # The free-form row is always offered; the named CLIs only when installed,
+        # so assert the shape rather than which ones this machine happens to have.
+        choices = m.external_clis()
+        assert m._SHELL_CHOICE in choices and choices[m._SHELL_CHOICE]["cmd"] == ""
+        assert all(shutil.which(c["cmd"]) for n, c in choices.items() if n != m._SHELL_CHOICE)
+
+        # The briefing has to carry the three things an external agent cannot
+        # guess: where to connect, how, and what it may call.
+        text = open(m.write_briefing(), encoding="utf-8").read()
+        assert f"{RPC_HOST}:{RPC_PORT}" in text, "briefing must name the port"
+        assert "call_tool" in text and "xmlrpc.client" in text, text[:400]
+        for tool in tools.describe_tools():
+            assert f"**{tool['name']}**" in text, f"{tool['name']} missing from briefing"
+        assert "no sandbox" in text, "briefing must warn about execute_code"
     finally:
         (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
          m._offer_no_key, m._launch_cli, m._open_keys_page) = real

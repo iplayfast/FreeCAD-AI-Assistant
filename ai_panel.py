@@ -37,7 +37,7 @@ from rpc_server.tools import call_tool
 
 # The provider table and model lookup live with the setup wizard; sharing them
 # keeps the panel and the AI() console offering the same services.
-from rpc_server.console import _PRESETS, _fetch_models
+from rpc_server.console import _PRESETS, _fetch_models, _launch_cli, external_clis
 
 _TOOL_TIMEOUT = 600   # a recompute or solver run is the slow part, not the queue
 
@@ -149,9 +149,24 @@ class AIChatPanel(QDockWidget):
         form.setContentsMargins(4, 4, 4, 4)
 
         self._service = QComboBox()
+        # Services that answer in this panel first, then the CLIs that answer in
+        # their own terminal. One dropdown because it is one decision: who is
+        # doing the thinking for this session.
         self._service.addItems(list(_PRESETS))
+        self._cli_choices = external_clis()
+        self._service.insertSeparator(self._service.count())
+        self._service.addItems(list(self._cli_choices))
         self._service.currentIndexChanged.connect(self._on_service_changed)
         form.addRow("Service:", self._service)
+
+        self._cmd_label = QLabel("Command:")
+        self._cmd = QLineEdit()
+        self._cmd.setPlaceholderText("claude")
+        self._cmd.setToolTip(
+            "Run in a terminal, with a generated AGENT_BRIEFING.md describing "
+            "this FreeCAD session, its RPC port and its tools"
+        )
+        form.addRow(self._cmd_label, self._cmd)
 
         self._url_label = QLabel("Base URL:")
         self._url = QLineEdit()
@@ -173,9 +188,9 @@ class AIChatPanel(QDockWidget):
         self._load_btn = load_btn
         form.addRow("Model:", self._row(self._model, load_btn))
 
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self._on_save_settings)
-        form.addRow("", save_btn)
+        self._save_btn = QPushButton("Save")
+        self._save_btn.clicked.connect(self._on_save_settings)
+        form.addRow("", self._save_btn)
         return box
 
     @staticmethod
@@ -205,7 +220,29 @@ class AIChatPanel(QDockWidget):
         self._model.setCurrentText(model)
         self._on_service_changed()
 
+    def _current_cli(self):
+        """The external CLI selected in Service, or None for the built-in agent."""
+        return self._cli_choices.get(self._service.currentText())
+
     def _on_service_changed(self, *_):
+        cli = self._current_cli()
+        for w in (self._cmd_label, self._cmd):
+            w.setVisible(cli is not None)
+        if cli is not None:
+            # An external CLI brings its own credentials, model and loop; the
+            # only thing this panel decides is what to run.
+            for w in (self._url_label, self._url, self._key_label, self._key):
+                w.setVisible(False)
+            self._model.setEnabled(False)
+            self._load_btn.setEnabled(False)
+            self._save_btn.setText("Launch")
+            if cli["cmd"]:
+                self._cmd.setText(cli["cmd"])
+            return
+
+        self._model.setEnabled(True)
+        self._load_btn.setEnabled(True)
+        self._save_btn.setText("Save")
         preset = _PRESETS[self._service.currentText()]
         is_compat = preset["provider"] == "openai_compat"
         # A preset with a fixed base URL owns it; only "Other" is worth editing.
@@ -228,6 +265,10 @@ class AIChatPanel(QDockWidget):
         }
 
     def _on_save_settings(self):
+        cli = self._current_cli()
+        if cli is not None:
+            self._launch_external(cli)
+            return
         settings = load_settings()
         settings.update(self._settings_from_form())
         save_settings(settings)
@@ -235,6 +276,25 @@ class AIChatPanel(QDockWidget):
         # session rather than continue one bound to the old endpoint.
         self._session = None
         self._say_system("Settings saved.")
+
+    def _launch_external(self, cli: dict):
+        """Run the chosen CLI in a terminal, briefed on this FreeCAD session.
+
+        The RPC server is started first: the briefing hands out a port, and a CLI
+        that finds it dead has no way in and no way to say why.
+        """
+        cli = {**cli, "cmd": self._cmd.text().strip() or cli["cmd"]}
+        if not cli["cmd"]:
+            self._say_system("Type the command to run first.")
+            return
+        try:
+            from rpc_server.rpc_server import start_rpc_server
+
+            self._say_system(start_rpc_server())
+        except Exception as e:
+            self._say_system(f"Could not start the RPC server: {e}")
+        ok, message = _launch_cli(cli)
+        self._say_system(message if ok else f"Launch failed: {message}")
 
     def _on_load_models(self):
         form = self._settings_from_form()
@@ -317,6 +377,15 @@ class AIChatPanel(QDockWidget):
             return
         if self._worker is not None and self._worker.isRunning():
             self._say_system("A run is already in progress — wait for it to finish.")
+            return
+        cli = self._current_cli()
+        if cli is not None:
+            # Otherwise this would quietly answer from whichever service was
+            # saved last, which is not the one shown in the dropdown.
+            self._say_system(
+                f"{self._service.currentText()} runs in its own terminal — press "
+                "Launch in Settings and type there. Pick a service above to chat here."
+            )
             return
 
         try:
