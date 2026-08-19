@@ -40,6 +40,7 @@ from rpc_server.tools import call_tool
 from rpc_server.console import (
     _PRESETS,
     _fetch_models,
+    discover_local_servers,
     external_clis,
     launch_agent_cli,
     scan_clis,
@@ -101,6 +102,31 @@ class _ModelLoader(QThread):
         self.loaded.emit(models)
 
 
+def _same_endpoint(url: str) -> str:
+    """Key for "these two URLs are the same server".
+
+    Discovery reports 127.0.0.1 while the Ollama preset is written as localhost,
+    so comparing the strings listed the same server twice.
+    """
+    return (url or "").replace("//localhost:", "//127.0.0.1:").rstrip("/")
+
+
+class _ServerScanner(QThread):
+    """Find running local model servers off the GUI thread.
+
+    A second or so of probing ports nobody is serving on is not something to do
+    on the thread that paints the window.
+    """
+
+    found = Signal(object)
+
+    def run(self):
+        try:
+            self.found.emit(discover_local_servers())
+        except Exception:
+            self.found.emit([])          # discovery is a convenience, never fatal
+
+
 class _SendFilter(QObject):
     """Submit on Ctrl+Enter; plain Enter stays a newline."""
 
@@ -160,6 +186,8 @@ class AIChatPanel(QDockWidget):
         layout.addWidget(self._build_input_box())
         self._refresh_settings_fields()
         self._report_cli_scan()
+        # Runs on a worker thread, so opening the panel is not held up by it.
+        self._on_detect()
 
     # -- settings ----------------------------------------------------------
 
@@ -184,7 +212,14 @@ class AIChatPanel(QDockWidget):
         self._service.insertSeparator(self._service.count())
         self._service.addItems(list(self._cli_choices))
         self._service.currentIndexChanged.connect(self._on_service_changed)
-        form.addRow("Service:", self._service)
+        self._detect_btn = QPushButton("Detect")
+        self._detect_btn.setToolTip(
+            "Look for local model servers running right now. Ports are not fixed "
+            "— Unsloth's llama.cpp picks a new one each start — so this asks "
+            "everything listening on loopback rather than guessing."
+        )
+        self._detect_btn.clicked.connect(self._on_detect)
+        form.addRow("Service:", self._row(self._service, self._detect_btn))
 
         self._cmd_label = QLabel("Command:")
         self._cmd = QLineEdit()
@@ -308,6 +343,44 @@ class AIChatPanel(QDockWidget):
         # session rather than continue one bound to the old endpoint.
         self._session = None
         self._say_system("Settings saved.")
+
+    def _on_detect(self):
+        self._detect_btn.setEnabled(False)
+        self._scanner = _ServerScanner()
+        self._scanner.found.connect(self._on_servers_found)
+        self._scanner.start()
+
+    def _on_servers_found(self, servers):
+        """Add anything discovered to the local half of the dropdown.
+
+        Discovered servers are shaped like presets, so selecting one goes through
+        exactly the same path as Ollama — no second code path for "found" versus
+        "configured". Their model list comes from the probe, so Load needs no
+        network call for them.
+        """
+        self._detect_btn.setEnabled(True)
+        known = {_same_endpoint(p.get("base_url")) for p in self._services.values()}
+        added = []
+        for server in servers:
+            if _same_endpoint(server["base_url"]) in known:
+                continue                  # already offered, e.g. Ollama's preset
+            label = f"{server['name'] or 'local server'} :{server['port']}"
+            index = len(self._services)   # the separator sits here; push it down
+            self._services[label] = {
+                "provider": "openai_compat",
+                "base_url": server["base_url"],
+                "key_from": None,         # local, no credential
+                "models": server["models"],
+            }
+            self._service.insertItem(index, label)
+            added.append(f"{label} — {len(server['models'])} model(s)")
+        if added:
+            self._say_system("Local model servers found: " + "; ".join(added) + ".")
+        else:
+            self._say_system(
+                "No additional local model servers are listening." if servers
+                else "No local model servers are listening."
+            )
 
     def _report_cli_scan(self):
         """Show the PATH scan behind the external-CLI rows in the dropdown.

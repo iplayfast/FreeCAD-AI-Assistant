@@ -182,6 +182,101 @@ def scan_clis() -> list:
     return [resolve(p["cli"]) for p in _PRESETS.values() if p.get("cli")]
 
 
+def _loopback_listeners() -> list:
+    """(port, inode) for every TCP socket listening on loopback.
+
+    Read from /proc rather than shelled out to ``ss``: no subprocess, no parsing
+    of a human-readable table, and it is the same source ``ss`` reads.
+    """
+    out = []
+    for path, addr_len in (("/proc/net/tcp", 8), ("/proc/net/tcp6", 32)):
+        try:
+            with open(path, encoding="utf-8") as f:
+                next(f, None)                      # header
+                for line in f:
+                    parts = line.split()
+                    if len(parts) < 10 or parts[3] != "0A":   # 0A == LISTEN
+                        continue
+                    host, _, port = parts[1].rpartition(":")
+                    # 0100007F is 127.0.0.1 little-endian; the v6 loopback and
+                    # the wildcard both end up reachable on 127.0.0.1 anyway.
+                    if len(host) != addr_len:
+                        continue
+                    out.append((int(port, 16), parts[9]))
+        except OSError:
+            continue                               # not Linux, or /proc not mounted
+    return out
+
+
+def _listener_names(listeners: list) -> dict:
+    """port -> process name, best effort.
+
+    Only processes this user owns expose their fds, so anything else falls back
+    to the port number alone. Nice-to-have, never load-bearing.
+    """
+    wanted = {inode: port for port, inode in listeners}
+    names = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                target = os.readlink(f"/proc/{pid}/fd/{fd}")
+                if not target.startswith("socket:["):
+                    continue
+                inode = target[8:-1]
+                if inode in wanted:
+                    with open(f"/proc/{pid}/comm", encoding="utf-8") as f:
+                        names[wanted[inode]] = f.read().strip()
+        except OSError:
+            continue                               # gone, or not ours to read
+    return names
+
+
+def discover_local_servers(timeout: float = 1.0) -> list:
+    """Local OpenAI-compatible model servers, found by asking what is listening.
+
+    Probing a list of well-known ports does not find them: Unsloth's llama-server
+    takes an ephemeral port — 34819 on the machine this was written for, different
+    on the next start — so the only thing that works is to ask every loopback
+    listener whether it serves ``/v1/models``, and believe the ones that do.
+
+    Servers that answer with an empty model list are dropped: Unsloth Studio's own
+    front door does that when nothing is loaded, and offering it would only fail
+    later with "provider needs a model".
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rpc_server.settings import RPC_PORT
+
+    listeners = _loopback_listeners()
+    names = _listener_names(listeners)
+    # Not our own XML-RPC server: it is POST-only, so probing it achieves nothing
+    # except a "501 Unsupported method ('GET')" in the user's Report view.
+    ports = sorted({p for p, _ in listeners} - {RPC_PORT})
+
+    def probe(port: int):
+        url = f"http://127.0.0.1:{port}/v1"
+        try:
+            resp = get_json(f"{url}/models", timeout=timeout)
+        except Exception:
+            return None                            # not a model server, or not answering
+        entries = resp.get("data") or resp.get("models") or []
+        models = [str(m["id"]) for m in entries if isinstance(m, dict) and m.get("id")]
+        # A model id that is a filesystem path means we found a back end, not a
+        # front door: Ollama's internal llama-server answers /v1/models with the
+        # blob it has open. Talking to it would bypass Ollama and its model names.
+        if not models or any(m.startswith("/") for m in models):
+            return None
+        return {"port": port, "base_url": url, "models": sorted(models),
+                "name": names.get(port, "")}
+
+    # Concurrently, because most of these ports are not model servers and the
+    # cost of finding that out is the full timeout each: 5s serially, ~1s here.
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return [s for s in pool.map(probe, ports) if s]
+
+
 def external_clis() -> dict:
     """Label -> cli dict for every agent CLI that is installed.
 
@@ -957,6 +1052,36 @@ def demo() -> None:
         assert len(scan) >= len(choices) - 1, (scan, choices)
         assert all(("path" in c and c["cmd"]) for c in scan), scan
         assert (sum(1 for c in scan if c["path"])) == len(choices) - 1, (scan, choices)
+
+        # Discovery: keep real front doors, drop the things that only look like one.
+        real_listeners, real_names = m._loopback_listeners, m._listener_names
+        try:
+            m._loopback_listeners = lambda: [(11434, "1"), (8888, "2"), (40129, "3"),
+                                             (RPC_PORT, "4"), (22, "5")]
+            m._listener_names = lambda listeners: {11434: "ollama", 40129: "llama-server"}
+            bodies = {
+                11434: {"data": [{"id": "qwen3.8:latest"}]},          # a real server
+                8888: {"data": []},                                   # loaded nothing
+                40129: {"data": [{"id": "/var/blobs/sha256-abc"}]},   # a back end
+                RPC_PORT: {"data": [{"id": "should-never-be-asked"}]},
+            }
+            asked = []
+
+            def fake_get_json(url, headers=None, timeout=None):
+                port = int(url.split(":")[2].split("/")[0])
+                asked.append(port)
+                if port not in bodies:
+                    raise ProviderError("refused")
+                return bodies[port]
+
+            m.get_json = fake_get_json
+            servers = m.discover_local_servers()
+            assert [s["port"] for s in servers] == [11434], servers
+            assert servers[0]["models"] == ["qwen3.8:latest"], servers
+            assert servers[0]["name"] == "ollama", servers
+            assert RPC_PORT not in asked, "must not probe our own XML-RPC port"
+        finally:
+            m._loopback_listeners, m._listener_names = real_listeners, real_names
 
         # The briefing has to carry the three things an external agent cannot
         # guess: where to connect, how, and what it may call.
