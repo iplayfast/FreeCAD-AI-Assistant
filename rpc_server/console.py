@@ -16,6 +16,7 @@ blocked during the network call, exactly as it is for any long console command.
 
 import json
 import os
+import re
 import threading
 
 import FreeCAD
@@ -362,7 +363,9 @@ def write_briefing() -> str:
         f'fc = xmlrpc.client.ServerProxy("{url}", allow_none=True)',
         'fc.ping()',
         'fc.list_documents()',
-        'fc.call_tool("create_box", {"length": 10, "width": 10, "height": 10})',
+        'fc.call_tool("create_document", {"name": "Demo"})',
+        'fc.call_tool("create_object", {"doc_name": "Demo", "obj_type": "Part::Box",',
+        '                               "obj_name": "Box", "properties": {"Length": 10}})',
         "```",
         "",
         "### XML-RPC methods",
@@ -1104,8 +1107,13 @@ def demo() -> None:
         text = open(m.write_briefing(), encoding="utf-8").read()
         assert f"{RPC_HOST}:{RPC_PORT}" in text, "briefing must name the port"
         assert "call_tool" in text and "xmlrpc.client" in text, text[:400]
-        for tool in tools.describe_tools():
-            assert f"**{tool['name']}**" in text, f"{tool['name']} missing from briefing"
+        registry = {t["name"] for t in tools.describe_tools()}
+        for name in registry:
+            assert f"**{name}**" in text, f"{name} missing from briefing"
+        # Every tool the worked example calls must be a tool that exists. The
+        # example used to invoke "create_box", which never has.
+        for called in re.findall(r'call_tool\("([a-z_0-9]+)"', text):
+            assert called in registry, f"briefing example calls unknown tool {called!r}"
         assert "no sandbox" in text, "briefing must warn about execute_code"
     finally:
         (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
