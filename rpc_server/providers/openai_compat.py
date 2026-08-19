@@ -14,6 +14,7 @@ from rpc_server.providers.base import (
     Message,
     ProviderError,
     ToolCall,
+    DEFAULT_TIMEOUT,
     post_json,
 )
 
@@ -21,7 +22,8 @@ from rpc_server.providers.base import (
 class OpenAICompatProvider:
     name = "openai_compat"
 
-    def __init__(self, base_url: str, model: str, api_key: str = ""):
+    def __init__(self, base_url: str, model: str, api_key: str = "",
+                 timeout: float = DEFAULT_TIMEOUT):
         if not base_url:
             raise ProviderError("OpenAI-compatible provider needs a base_url.")
         if not model:
@@ -29,6 +31,7 @@ class OpenAICompatProvider:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._key = api_key
+        self._timeout = timeout
 
     def complete(self, system: str, messages: list[Message], tools: list[dict]) -> AssistantReply:
         payload: dict[str, Any] = {
@@ -50,7 +53,8 @@ class OpenAICompatProvider:
         headers = {}
         if self._key:  # Ollama and other local servers accept requests with no key
             headers["Authorization"] = f"Bearer {self._key}"
-        resp = post_json(f"{self.base_url}/chat/completions", headers, payload)
+        resp = post_json(f"{self.base_url}/chat/completions", headers, payload,
+                         timeout=self._timeout)
         return _from_openai(resp)
 
 

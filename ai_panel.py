@@ -401,6 +401,7 @@ class AIChatPanel(QDockWidget):
             "model": settings.get("ai_model") or None,
             "base_url": settings.get("ai_base_url", ""),
             "api_key": settings.get("ai_api_key", ""),
+            "timeout": settings.get("ai_timeout"),
         })
         # Nothing drains the queue unless the pump is up, and the panel has to
         # work with the RPC server switched off.

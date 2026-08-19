@@ -62,8 +62,17 @@ class AssistantReply:
 Message = dict[str, Any]
 
 
+# Generous because the slow case is legitimate, not a fault: a local server has
+# to page the model into memory before the first token, and this agent's prompt
+# carries the whole 43-tool schema for it to reason over. The wait costs nothing
+# — the panel runs it on a worker thread — whereas cutting a working run short
+# looks exactly like a broken addon. Override per-install with 'ai_timeout'.
+DEFAULT_TIMEOUT = 600
+
+
 def post_json(
-    url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float = 180
+    url: str, headers: dict[str, str], payload: dict[str, Any],
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """POST ``payload`` as JSON and return the parsed JSON response.
 
@@ -103,6 +112,24 @@ def _send(req: urllib.request.Request, url: str, timeout: float) -> dict[str, An
         body = e.read().decode("utf-8", "replace")
         raise ProviderError(f"HTTP {e.code} from {url}: {body[:800]}") from None
     except urllib.error.URLError as e:
+        # A connect timeout arrives wrapped in URLError; a *read* timeout does
+        # not, so it is handled separately below.
+        if isinstance(e.reason, TimeoutError):
+            raise _timed_out(url, timeout) from None
         raise ProviderError(f"could not reach {url}: {e.reason}") from None
+    except TimeoutError:
+        # Bare socket timeout while reading the response. TimeoutError is not a
+        # URLError, so before this it escaped _send entirely and reached the user
+        # as "TimeoutError: timed out" — true, and of no use to anyone.
+        raise _timed_out(url, timeout) from None
     except (ValueError, KeyError) as e:
         raise ProviderError(f"bad response from {url}: {e}") from None
+
+
+def _timed_out(url: str, timeout: float) -> ProviderError:
+    return ProviderError(
+        f"no response from {url} within {timeout:g}s. A local model that has to "
+        "be paged into memory, or one reasoning over the whole tool list, can "
+        "take longer than this — raise 'ai_timeout' in the settings file, or "
+        "pick a smaller model."
+    )

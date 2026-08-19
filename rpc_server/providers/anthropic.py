@@ -17,6 +17,7 @@ from rpc_server.providers.base import (
     Message,
     ProviderError,
     ToolCall,
+    DEFAULT_TIMEOUT,
     post_json,
 )
 
@@ -29,11 +30,13 @@ _MAX_TOKENS = 16000
 class AnthropicProvider:
     name = "anthropic"
 
-    def __init__(self, api_key: str, model: str = _DEFAULT_MODEL):
+    def __init__(self, api_key: str, model: str = _DEFAULT_MODEL,
+                 timeout: float = DEFAULT_TIMEOUT):
         if not api_key:
             raise ProviderError("Anthropic API key not set.")
         self._key = api_key
         self.model = model
+        self._timeout = timeout
 
     def complete(self, system: str, messages: list[Message], tools: list[dict]) -> AssistantReply:
         payload: dict[str, Any] = {
@@ -49,7 +52,7 @@ class AnthropicProvider:
                 for t in tools
             ]
         headers = {"x-api-key": self._key, "anthropic-version": _VERSION}
-        resp = post_json(_URL, headers, payload)
+        resp = post_json(_URL, headers, payload, timeout=self._timeout)
         return _from_anthropic(resp)
 
 

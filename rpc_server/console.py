@@ -103,6 +103,7 @@ def _ai_config() -> dict:
         "model": s.get("ai_model") or None,   # None => provider default
         "base_url": s.get("ai_base_url", ""),
         "api_key": s.get("ai_api_key", ""),
+        "timeout": s.get("ai_timeout"),
     }
 
 

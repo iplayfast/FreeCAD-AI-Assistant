@@ -22,6 +22,9 @@ _DEFAULT_SETTINGS = {
     "ai_model": "",               # "" => provider default (claude-opus-5 for anthropic)
     "ai_base_url": "",            # for openai_compat, e.g. http://localhost:11434/v1
     "ai_api_key": "",             # falls back to ANTHROPIC_API_KEY / OPENAI_API_KEY env
+    # Seconds to wait for one completion. Minutes rather than seconds because a
+    # local model may have to be paged into memory before the first token.
+    "ai_timeout": 600,
 }
 
 

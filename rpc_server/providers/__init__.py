@@ -37,17 +37,21 @@ __all__ = [
 
 
 def make_provider(config: dict):
-    """Build a provider from settings: {provider, model, base_url, api_key}."""
+    """Build a provider from settings: {provider, model, base_url, api_key, timeout}."""
     kind = config.get("provider", "anthropic")
+    timeout = float(config.get("timeout") or DEFAULT_TIMEOUT)
     if kind == "anthropic":
         key = config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
-        return AnthropicProvider(api_key=key, model=config.get("model") or "claude-opus-5")
+        return AnthropicProvider(
+            api_key=key, model=config.get("model") or "claude-opus-5", timeout=timeout,
+        )
     if kind == "openai_compat":
         key = config.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
         return OpenAICompatProvider(
             base_url=config.get("base_url", ""),
             model=config.get("model", ""),
             api_key=key,
+            timeout=timeout,
         )
     raise ProviderError(f"unknown provider: {kind!r}")
 
@@ -117,5 +121,28 @@ def demo() -> None:
     before = len(seen)
     _base._tap("request", "http://x", {})
     assert len(seen) == before, "cleared logger must not be called"
+
+    # Both timeouts must arrive as ProviderError. A read timeout raises bare
+    # TimeoutError, which is not a URLError, so it used to escape _send entirely
+    # and reach the user as "TimeoutError: timed out".
+    import urllib.error
+    import urllib.request
+
+    from rpc_server.providers.base import _send
+
+    real_urlopen = urllib.request.urlopen
+    try:
+        for boom in (TimeoutError("timed out"),
+                     urllib.error.URLError(TimeoutError("timed out"))):
+            urllib.request.urlopen = lambda *a, _b=boom, **k: (_ for _ in ()).throw(_b)
+            try:
+                _send(urllib.request.Request("http://x"), "http://x", 12)
+            except ProviderError as e:
+                assert "within 12s" in str(e), e
+                assert "ai_timeout" in str(e), e
+            else:
+                raise AssertionError(f"{boom!r} did not become a ProviderError")
+    finally:
+        urllib.request.urlopen = real_urlopen
 
     print("providers demo: all checks passed")
