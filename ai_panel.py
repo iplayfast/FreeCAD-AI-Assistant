@@ -644,22 +644,38 @@ class AIChatPanel(QDockWidget):
         # work with the RPC server switched off.
         ensure_gui_pump()
         profile = settings.get("ai_tool_profile")
-        tools = describe_tools(profile)
-        self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools)
-        note = f"Describing {len(tools)} of {len(describe_tools())} tools to the model ({profile})"
+        # Discovery asked the server how big its window is, so a request that
+        # cannot fit is knowable here rather than by being refused. Sending it
+        # anyway to honour the setting means a guaranteed failure, and saying so
+        # and sending it anyway is worse — it fails while explaining that it will.
+        # Narrow it for this session instead, and leave the saved setting alone.
         window = (self._services.get(self._service.currentText()) or {}).get("n_ctx")
-        if window:
-            note += f", ~{_profile_tokens(profile)} of this server's {window} tokens"
-        self._say_system(note + ".")
-        # Discovery asked the server how big its window is, so this does not have
-        # to be learned by being refused.
+        chosen, note = profile, ""
         if window and _profile_tokens(profile) > window / 2:
             fits = _profile_that_fits(window)
-            self._say_system(
-                f"That will not leave room to work in {window} tokens. "
-                + (f"Set Tools to {fits!r}." if fits else
-                   "Every profile is too large for this window; give the server a bigger -c.")
-            )
+            if fits:
+                chosen = fits
+                note = (
+                    f"{profile!r} is ~{_profile_tokens(profile)} tokens and this server "
+                    f"gives {window} per request, so this session uses {fits!r} "
+                    f"(~{_profile_tokens(fits)}). Set Tools to {fits!r} to keep it, or "
+                    "give the server a larger context — note --parallel N splits the "
+                    "window between N slots."
+                )
+            else:
+                note = (
+                    f"Every profile is larger than this server's {window}-token window. "
+                    "Give it a bigger context (llama.cpp's -c, divided by --parallel N)."
+                )
+
+        tools = describe_tools(chosen)
+        self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools)
+        head = f"Describing {len(tools)} of {len(describe_tools())} tools to the model ({chosen})"
+        if window:
+            head += f", ~{_profile_tokens(chosen)} of this server's {window} tokens"
+        self._say_system(head + ".")
+        if note:
+            self._say_system(note)
         return self._session
 
     def _run_tool(self, name: str, arguments: dict):
