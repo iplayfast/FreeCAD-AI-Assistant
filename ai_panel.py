@@ -211,7 +211,7 @@ class AIChatPanel(QDockWidget):
         self._cli_choices = external_clis()
         self._service.insertSeparator(self._service.count())
         self._service.addItems(list(self._cli_choices))
-        self._service.currentIndexChanged.connect(self._on_service_changed)
+        self._service.currentIndexChanged.connect(self._on_service_picked)
         self._detect_btn = QPushButton("Detect")
         self._detect_btn.setToolTip(
             "Look for local model servers running right now. Ports are not fixed "
@@ -281,13 +281,10 @@ class AIChatPanel(QDockWidget):
     def _refresh_settings_fields(self):
         """Load the saved settings into the form, matching them to a preset."""
         s = load_settings()
-        name = next(
-            (n for n, p in self._services.items()
-             if p["provider"] == s.get("ai_provider")
-             and p.get("base_url", "") == s.get("ai_base_url", "")),
-            list(self._services)[0],
-        )
+        name = self._service_matching(s) or list(self._services)[0]
+        self._service.blockSignals(True)
         self._service.setCurrentIndex(max(0, self._service.findText(name)))
+        self._service.blockSignals(False)
         self._url.setText(s.get("ai_base_url", ""))
         self._key.setText(s.get("ai_api_key", ""))
         model = s.get("ai_model", "")
@@ -296,6 +293,65 @@ class AIChatPanel(QDockWidget):
         self._model.setCurrentText(model)
         wanted = s.get("ai_tool_profile", "Everything")
         self._profile.setCurrentIndex(max(0, self._profile.findText(wanted)))
+        self._on_service_changed()
+
+    def _service_matching(self, settings):
+        """The dropdown entry that corresponds to these saved settings, if any."""
+        return next(
+            (n for n, p in self._services.items()
+             if p["provider"] == settings.get("ai_provider")
+             and _same_endpoint(p.get("base_url")) == _same_endpoint(settings.get("ai_base_url"))),
+            None,
+        )
+
+    def _select_saved_service(self):
+        """Re-resolve the saved service once discovery has added its entry.
+
+        _refresh_settings_fields runs in __init__, before the scan has finished,
+        so a saved server that is only found by scanning matches nothing and the
+        form falls back to the first entry in the list. The dropdown then said
+        Ollama while the settings said llama-server, and saving in that state
+        wrote Ollama's URL against the other one's model - which surfaced much
+        later as the endpoint reporting a model it had never heard of.
+        """
+        settings = load_settings()
+        name = self._service_matching(settings)
+        if name is None:
+            saved_url = settings.get("ai_base_url", "")
+            if saved_url and not self._current_cli():
+                self._say_system(
+                    f"The saved service at {saved_url} is not running, so "
+                    f"{self._service.currentText()!r} is selected instead. Pick "
+                    "a service and press Save."
+                )
+            return
+        if self._service.currentText() == name:
+            return
+        index = self._service.findText(name)
+        if index < 0:
+            return
+        # Not a user pick: keep the saved model rather than clearing it.
+        self._service.blockSignals(True)
+        self._service.setCurrentIndex(index)
+        self._service.blockSignals(False)
+        self._on_service_changed()
+        self._say_system(f"Selected the saved service, {name}.")
+
+    def _on_service_picked(self, *_):
+        """A user changed Service, as opposed to settings being restored.
+
+        The model list belongs to the service that produced it. Leaving it in
+        place across a change let a model from one endpoint be saved against
+        another, which fails only later, at request time, as the endpoint
+        reporting a model it has never heard of.
+        """
+        self._model.clear()
+        preset = self._services.get(self._service.currentText())
+        if preset and preset.get("models"):
+            self._model.addItems(preset["models"])
+            self._model.setCurrentText(preset["models"][0])
+        else:
+            self._model.setCurrentText("")
         self._on_service_changed()
 
     def _current_cli(self):
@@ -407,6 +463,9 @@ class AIChatPanel(QDockWidget):
                 "No additional local model servers are listening." if servers
                 else "No local model servers are listening."
             )
+        # Only now can a saved server that exists solely on a scanned port be
+        # matched to a dropdown entry.
+        self._select_saved_service()
 
     def _report_cli_scan(self):
         """Show the PATH scan behind the external-CLI rows in the dropdown.
@@ -609,9 +668,33 @@ class AIChatPanel(QDockWidget):
             )
         elif kind == "error":
             self._say_system(f"Error: {event['message']}")
+            hint = self._error_hint(event["message"])
+            if hint:
+                self._say_system(hint)
         elif kind == "done" and not self._said_something:
             # A clean finish and a stall look identical otherwise.
             self._say_system(f"(finished without a summary, stop={event['stop']})")
+
+    @staticmethod
+    def _error_hint(message: str) -> str:
+        """Turn the two failures seen in practice into the action that fixes them.
+
+        Both arrive as a provider's raw HTTP body, which states the fact and not
+        the remedy — and in both cases the remedy is a control in this panel.
+        """
+        low = message.lower()
+        if "context" in low and ("exceed" in low or "too long" in low or "larger" in low):
+            return (
+                "The request is bigger than that server's context window. The tool "
+                "schema is most of it: narrow Tools above — 'Core only' describes 11 "
+                "tools rather than 43 — or restart the server with a larger -c."
+            )
+        if "model" in low and "not found" in low:
+            return (
+                "That model is not on this server. Press Load to list what it does "
+                "have, choose one, and Save."
+            )
+        return ""
 
     def _on_run_finished(self):
         self._set_busy(False)
