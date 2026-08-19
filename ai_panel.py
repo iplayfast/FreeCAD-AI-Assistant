@@ -304,6 +304,14 @@ class AIChatPanel(QDockWidget):
             return
         self._load_btn.setEnabled(False)
         self._load_btn.setText("…")
+        # A network round trip to a server that may be paging a model in, or may
+        # be down and heading for a timeout. A greyed-out button does not say
+        # that anything is happening, let alone what or where.
+        self._say_system(
+            f"Searching {self._service.currentText()} for available models at "
+            f"{form['ai_base_url'] or 'the provider default'} — this can take a "
+            "few seconds."
+        )
         self._loader = _ModelLoader(form["ai_base_url"], form["ai_api_key"])
         self._loader.loaded.connect(self._on_models_loaded)
         self._loader.failed.connect(self._on_models_failed)
