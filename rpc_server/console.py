@@ -37,7 +37,8 @@ _PRESETS = {
         # No OpenAI-style /models endpoint, so these are offered directly.
         "models": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
         "key_from": "console.anthropic.com",
-        "cli": {"cmd": "claude", "name": "Claude Code", "config": "~/.claude.json"},
+        "cli": {"cmd": "claude", "name": "Claude Code", "config": "~/.claude.json",
+                "alts": ("claude-code",)},
     },
     "Gemini (Google)": {
         "provider": "openai_compat",
@@ -46,13 +47,14 @@ _PRESETS = {
         # prompt_flag: gemini takes its opening prompt behind -i; claude and
         # codex take it positionally, which is the default here.
         "cli": {"cmd": "gemini", "name": "Gemini CLI", "config": "~/.gemini/settings.json",
-                "prompt_flag": "-i"},
+                "prompt_flag": "-i", "alts": ("gemini-cli",)},
     },
     "OpenAI": {
         "provider": "openai_compat",
         "base_url": "https://api.openai.com/v1",
         "key_from": "platform.openai.com/api-keys",
-        "cli": {"cmd": "codex", "name": "Codex CLI", "config": "~/.codex/config.toml"},
+        "cli": {"cmd": "codex", "name": "Codex CLI", "config": "~/.codex/config.toml",
+                "alts": ("codex-cli",)},
     },
     "Ollama (local)": {
         "provider": "openai_compat",
@@ -165,10 +167,18 @@ def scan_clis() -> list:
     """
     import shutil
 
-    return [
-        {**p["cli"], "path": shutil.which(p["cli"]["cmd"])}
-        for p in _PRESETS.values() if p.get("cli")
-    ]
+    def resolve(cli: dict) -> dict:
+        # These ship under more than one name — Gemini is `gemini` from the npm
+        # package but `gemini-cli` from a hand-rolled npx wrapper, and looking
+        # only for the first spelling reports a CLI the user has as missing.
+        # ``cmd`` becomes whichever one exists, so the launcher runs that.
+        for candidate in (cli["cmd"], *cli.get("alts", ())):
+            found = shutil.which(candidate)
+            if found:
+                return {**cli, "cmd": candidate, "path": found}
+        return {**cli, "path": None}
+
+    return [resolve(p["cli"]) for p in _PRESETS.values() if p.get("cli")]
 
 
 def external_clis() -> dict:

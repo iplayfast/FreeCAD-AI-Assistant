@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Plan view of two rooms with a doorway: the wizard draws a floorplan, and it
+     needs to read as something other than the "AI" badge at 16px on a toolbar. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <circle cx="32" cy="32" r="28" fill="#4a90e2" stroke="#2c5aa0" stroke-width="2"/>
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linejoin="miter">
+    <rect x="16" y="16" width="32" height="32"/>
+    <!-- internal wall, stopping short of the south wall to leave a doorway -->
+    <path d="M32 16 L32 33"/>
+  </g>
+  <!-- door swing into the right-hand room -->
+  <path d="M32 48 A9 9 0 0 0 41 39" fill="none" stroke="#ffffff" stroke-width="2"/>
+</svg>

@@ -33,6 +33,7 @@ sys.path.insert(0, _ADDON_DIR)
 # globals only. Publish the one value the class bodies below need, namespaced
 # because that globals dict is shared with every other addon's InitGui.
 globals()["_AI_ICON"] = os.path.join(_ADDON_DIR, "icons", "ai_workbench.svg")
+globals()["_AI_BIM_ICON"] = os.path.join(_ADDON_DIR, "icons", "bim_wizard.svg")
 
 # AI() / AI_config() / AI_verbose() in the Python console, no import needed.
 try:
@@ -68,6 +69,32 @@ class AITogglePanelCommand:
 Gui.addCommand("AITogglePanelCommand", AITogglePanelCommand())
 
 
+class AIBimWizardCommand:
+    ICON = _AI_BIM_ICON  # noqa: F821  (see AITogglePanelCommand.ICON)
+
+    def GetResources(self):
+        return {
+            "Pixmap": self.ICON,
+            "MenuText": "BIM Wizard",
+            "ToolTip": "Lay out a floorplan wall by wall — no AI, no API key",
+        }
+
+    def Activated(self):
+        # Local imports: this method runs long after the file's namespace is
+        # gone, so `Gui` from the top of the file is not reachable here.
+        import FreeCADGui
+
+        from bim_wizard import BimWizardDialog
+
+        BimWizardDialog(FreeCADGui.getMainWindow()).exec_()
+
+    def IsActive(self):
+        return True
+
+
+Gui.addCommand("AIBimWizardCommand", AIBimWizardCommand())
+
+
 class AIAssistantWB(Gui.Workbench):
     MenuText = "AI Assistant"
     ToolTip = "AI assistant, console and MCP server for FreeCAD"
@@ -81,6 +108,7 @@ class AIAssistantWB(Gui.Workbench):
 
         commands = [
             "AITogglePanelCommand",
+            "AIBimWizardCommand",
             "Start_RPC_Server",
             "Stop_RPC_Server",
             "Toggle_Auto_Start",
