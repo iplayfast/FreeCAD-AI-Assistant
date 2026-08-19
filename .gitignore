@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+
+# Third-party, pip-installed: `pip install --target vendor anthropic==0.109.2`
+# rebuilds it. 28 MB of someone else's code does not belong in this history —
+# and the provider layer in rpc_server/ uses stdlib urllib, so nothing needs it.
+vendor/
+
+# Runtime output, not source.
+ai_assistant.log
+
+# Test documents the assistant left behind at the addon root.
+*.FCStd
+*.FCBak
+
+# Symlinks out to personal paths, meaningless in a clone:
+#   dimensions.txt                -> ~/Documents/...
+#   FreeCAD-Documentation-Project -> ~/github/FreeCAD-Documentation-Project
+# The wiki mirror is what search_wiki reads; clone it yourself and symlink it.
+dimensions.txt
+FreeCAD-Documentation-Project
