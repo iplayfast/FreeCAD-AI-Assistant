@@ -37,7 +37,13 @@ from rpc_server.tools import call_tool
 
 # The provider table and model lookup live with the setup wizard; sharing them
 # keeps the panel and the AI() console offering the same services.
-from rpc_server.console import _PRESETS, _fetch_models, _launch_cli, external_clis
+from rpc_server.console import (
+    _PRESETS,
+    _fetch_models,
+    _launch_cli,
+    external_clis,
+    scan_clis,
+)
 
 _TOOL_TIMEOUT = 600   # a recompute or solver run is the slow part, not the queue
 
@@ -138,6 +144,7 @@ class AIChatPanel(QDockWidget):
 
         layout.addWidget(self._build_input_box())
         self._refresh_settings_fields()
+        self._report_cli_scan()
 
     # -- settings ----------------------------------------------------------
 
@@ -276,6 +283,32 @@ class AIChatPanel(QDockWidget):
         # session rather than continue one bound to the old endpoint.
         self._session = None
         self._say_system("Settings saved.")
+
+    def _report_cli_scan(self):
+        """Show the PATH scan behind the external-CLI rows in the dropdown.
+
+        Without this the dropdown just silently omits what it could not find, and
+        "not installed" is indistinguishable from "FreeCAD was launched from a
+        desktop icon and never got your shell PATH" — which is the more likely
+        cause of the two, and the one with a fix.
+        """
+        rows = scan_clis()
+        found = [c for c in rows if c["path"]]
+        listed = "".join(
+            f'  {c["cmd"]:<8}{"✓ " + self._esc(c["path"]) if c["path"] else "✗ not on PATH"}<br>'
+            for c in rows
+        )
+        self._say_html(
+            f'<i style="color:#6c757d">Agent CLIs found on PATH '
+            f'({len(found)}/{len(rows)}):</i><br><code>{listed}</code>'
+        )
+        if len(found) < len(rows):
+            self._say_system(
+                "A CLI you have installed but that shows ✗ usually means FreeCAD "
+                "was started from a desktop launcher, which does not pass on your "
+                "shell PATH — start it from a terminal, or use the Shell command "
+                "row with a full path."
+            )
 
     def _launch_external(self, cli: dict):
         """Run the chosen CLI in a terminal, briefed on this FreeCAD session.

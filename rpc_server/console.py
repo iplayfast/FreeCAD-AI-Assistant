@@ -154,8 +154,25 @@ def _addon_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def scan_clis() -> list:
+    """Every agent CLI in ``_PRESETS``, each with where it was found or None.
+
+    Split out from ``external_clis`` so the panel can *report* the scan instead
+    of only acting on it. A CLI missing from the dropdown has two very different
+    causes that look identical from the dropdown: it isn't installed, or FreeCAD
+    was started from a desktop launcher and never inherited the shell PATH that
+    has it. Showing the scan tells those apart.
+    """
+    import shutil
+
+    return [
+        {**p["cli"], "path": shutil.which(p["cli"]["cmd"])}
+        for p in _PRESETS.values() if p.get("cli")
+    ]
+
+
 def external_clis() -> dict:
-    """Label -> cli dict for every agent CLI in ``_PRESETS`` that is installed.
+    """Label -> cli dict for every agent CLI that is installed.
 
     The panel offers these in the same dropdown as the API-key services. They are
     the other half of the choice: a local LLM answers *inside* the panel, while
@@ -164,12 +181,9 @@ def external_clis() -> dict:
     CLI that isn't there is a dead end. The free-form row is always last, so any
     other command can be pointed at the same interface.
     """
-    import shutil
-
     choices = {
-        f"{p['cli']['name']} (external CLI)": p["cli"]
-        for p in _PRESETS.values()
-        if p.get("cli") and shutil.which(p["cli"]["cmd"])
+        f"{cli['name']} (external CLI)": cli
+        for cli in scan_clis() if cli["path"]
     }
     choices[_SHELL_CHOICE] = {"cmd": "", "name": "shell command", "config": ""}
     return choices
@@ -888,6 +902,14 @@ def demo() -> None:
         choices = m.external_clis()
         assert m._SHELL_CHOICE in choices and choices[m._SHELL_CHOICE]["cmd"] == ""
         assert all(shutil.which(c["cmd"]) for n, c in choices.items() if n != m._SHELL_CHOICE)
+
+        # scan_clis reports every known CLI either way, which is what lets the
+        # panel say "not on PATH" instead of just dropping the row; external_clis
+        # is exactly its installed subset.
+        scan = m.scan_clis()
+        assert len(scan) >= len(choices) - 1, (scan, choices)
+        assert all(("path" in c and c["cmd"]) for c in scan), scan
+        assert (sum(1 for c in scan if c["path"])) == len(choices) - 1, (scan, choices)
 
         # The briefing has to carry the three things an external agent cannot
         # guess: where to connect, how, and what it may call.
