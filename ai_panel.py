@@ -103,25 +103,32 @@ class _ModelLoader(QThread):
         self.loaded.emit(models)
 
 
-def _profile_that_fits(message: str) -> str:
-    """The largest tool profile whose schema leaves room in the reported window.
+def _profile_tokens(profile: str) -> int:
+    """Rough token cost of a profile's schema. ~4 chars per token.
 
-    The server says how big its window is when it refuses; that is enough to name
-    the profile to switch to rather than leaving the user to try each in turn.
-    Budget is half the window, since the schema is resent every step and the
-    conversation and tool results have to live in the other half.
+    Crude, but the profiles are hundreds of tokens apart, so the estimate only
+    has to land in the right gap.
     """
-    found = re.search(r"context size \((\d+)", message) or re.search(r'"n_ctx":\s*(\d+)', message)
-    if not found:
+    return len(json.dumps(describe_tools(profile))) // 4
+
+
+def _profile_that_fits(window: int) -> str:
+    """The largest tool profile whose schema leaves room in ``window`` tokens.
+
+    Budget is half the window, since the schema is resent on every step and the
+    conversation and the tool results have to live in the other half.
+    """
+    if not window:
         return ""
-    budget = int(found.group(1)) / 2
-    best = ""
-    for name in PROFILES:
-        # ~4 characters per token: rough, but the gaps between profiles are wide.
-        if len(json.dumps(describe_tools(name))) / 4 <= budget:
-            if not best or len(describe_tools(name)) > len(describe_tools(best)):
-                best = name
-    return best
+    budget = window / 2
+    fitting = [n for n in PROFILES if _profile_tokens(n) <= budget]
+    return max(fitting, key=lambda n: len(describe_tools(n)), default="")
+
+
+def _window_from_error(message: str) -> int:
+    """The context size a server named while refusing, if it named one."""
+    found = re.search(r"context size \((\d+)", message) or re.search(r'"n_ctx":\s*(\d+)', message)
+    return int(found.group(1)) if found else 0
 
 
 def _same_endpoint(url: str) -> str:
@@ -461,6 +468,8 @@ class AIChatPanel(QDockWidget):
             label = f"{server['name'] or 'local server'} :{server['port']}"
             if needs_key:
                 label += " (needs key)"
+            elif server.get("n_ctx"):
+                label += f" ({server['n_ctx']} ctx)"
             index = len(self._services)   # the separator sits here; push it down
             self._services[label] = {
                 "provider": "openai_compat",
@@ -472,12 +481,20 @@ class AIChatPanel(QDockWidget):
                 # Distinguishes "answered 401" from "Other", which also shows a
                 # key row but is perfectly usable without one.
                 "needs_key": bool(needs_key),
+                # Per-request window, where the server reports one. Lets the
+                # profile be checked before a request rather than after a refusal.
+                "n_ctx": server.get("n_ctx"),
+                "slots": server.get("slots"),
             }
             self._service.insertItem(index, label)
-            added.append(
-                f"{label} — needs an API key, then press Load" if needs_key
-                else f"{label} — {len(server['models'])} model(s)"
-            )
+            if needs_key:
+                added.append(f"{label} — needs an API key, then press Load")
+            else:
+                note = f"{label} — {len(server['models'])} model(s)"
+                if server.get("slots", 1) and (server.get("slots") or 1) > 1:
+                    note += (f", {server['n_ctx']} tokens per request across "
+                             f"{server['slots']} slots")
+                added.append(note)
         if added:
             self._say_system("Local model servers found: " + "; ".join(added) + ".")
         else:
@@ -629,10 +646,20 @@ class AIChatPanel(QDockWidget):
         profile = settings.get("ai_tool_profile")
         tools = describe_tools(profile)
         self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools)
-        self._say_system(
-            f"Describing {len(tools)} of {len(describe_tools())} tools to the "
-            f"model ({profile})."
-        )
+        note = f"Describing {len(tools)} of {len(describe_tools())} tools to the model ({profile})"
+        window = (self._services.get(self._service.currentText()) or {}).get("n_ctx")
+        if window:
+            note += f", ~{_profile_tokens(profile)} of this server's {window} tokens"
+        self._say_system(note + ".")
+        # Discovery asked the server how big its window is, so this does not have
+        # to be learned by being refused.
+        if window and _profile_tokens(profile) > window / 2:
+            fits = _profile_that_fits(window)
+            self._say_system(
+                f"That will not leave room to work in {window} tokens. "
+                + (f"Set Tools to {fits!r}." if fits else
+                   "Every profile is too large for this window; give the server a bigger -c.")
+            )
         return self._session
 
     def _run_tool(self, name: str, arguments: dict):
@@ -706,7 +733,7 @@ class AIChatPanel(QDockWidget):
         """
         low = message.lower()
         if "context" in low and ("exceed" in low or "too long" in low or "larger" in low):
-            fits = _profile_that_fits(message)
+            fits = _profile_that_fits(_window_from_error(message))
             return (
                 "The request is bigger than that server's context window, so it was "
                 "refused before generating anything — the tool schema is most of it. "

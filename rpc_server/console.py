@@ -256,6 +256,22 @@ def discover_local_servers(timeout: float = 1.0) -> list:
     # except a "501 Unsupported method ('GET')" in the user's Report view.
     ports = sorted({p for p, _ in listeners} - {RPC_PORT})
 
+    def props(port: int) -> dict:
+        """The context window, where the server will say — llama.cpp serves /props.
+
+        Worth one extra request during a scan that is already happening: the
+        window is what decides whether the tool schema fits, and learning it by
+        being refused costs a round trip and reads like a fault rather than a
+        setting. Note n_ctx there is *per slot*: llama.cpp divides -c between
+        total_slots, so four slots of a 16384 context give each request 4096.
+        """
+        try:
+            resp = get_json(f"http://127.0.0.1:{port}/props", timeout=timeout)
+        except Exception:
+            return {}                              # not llama.cpp; no window to report
+        gen = resp.get("default_generation_settings") or {}
+        return {"n_ctx": gen.get("n_ctx"), "slots": resp.get("total_slots")}
+
     def probe(port: int):
         url = f"http://127.0.0.1:{port}/v1"
         try:
@@ -279,7 +295,7 @@ def discover_local_servers(timeout: float = 1.0) -> list:
         if not models or any(m.startswith("/") for m in models):
             return None
         return {"port": port, "base_url": url, "models": sorted(models),
-                "needs_key": False, "name": names.get(port, "")}
+                "needs_key": False, "name": names.get(port, ""), **props(port)}
 
     # Concurrently, because most of these ports are not model servers and the
     # cost of finding that out is the full timeout each: 5s serially, ~1s here.
