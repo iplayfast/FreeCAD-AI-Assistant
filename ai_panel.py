@@ -40,8 +40,8 @@ from rpc_server.tools import call_tool
 from rpc_server.console import (
     _PRESETS,
     _fetch_models,
-    _launch_cli,
     external_clis,
+    launch_agent_cli,
     scan_clis,
 )
 
@@ -150,16 +150,21 @@ class AIChatPanel(QDockWidget):
 
     def _build_settings_box(self) -> QWidget:
         box = QGroupBox("Settings")
-        box.setCheckable(True)
-        box.setChecked(False)
         form = QFormLayout(box)
         form.setContentsMargins(4, 4, 4, 4)
 
         self._service = QComboBox()
-        # Services that answer in this panel first, then the CLIs that answer in
-        # their own terminal. One dropdown because it is one decision: who is
+        # Endpoints this panel talks to itself first, then the CLIs that answer
+        # in their own terminal. One dropdown because it is one decision: who is
         # doing the thinking for this session.
-        self._service.addItems(list(_PRESETS))
+        #
+        # A vendor that ships a CLI is offered *as* that CLI and not also as a
+        # keyed endpoint — Claude and Gemini are the external CLI rows below, so
+        # listing them twice would ask for an API key to reach a tool that is
+        # already signed in. What is left here is what has no CLI to launch:
+        # local and self-hosted servers.
+        self._services = {n: p for n, p in _PRESETS.items() if not p.get("cli")}
+        self._service.addItems(list(self._services))
         self._cli_choices = external_clis()
         self._service.insertSeparator(self._service.count())
         self._service.addItems(list(self._cli_choices))
@@ -217,10 +222,10 @@ class AIChatPanel(QDockWidget):
         """Load the saved settings into the form, matching them to a preset."""
         s = load_settings()
         name = next(
-            (n for n, p in _PRESETS.items()
+            (n for n, p in self._services.items()
              if p["provider"] == s.get("ai_provider")
              and p.get("base_url", "") == s.get("ai_base_url", "")),
-            list(_PRESETS)[0],
+            list(self._services)[0],
         )
         self._service.setCurrentIndex(max(0, self._service.findText(name)))
         self._url.setText(s.get("ai_base_url", ""))
@@ -255,7 +260,7 @@ class AIChatPanel(QDockWidget):
         for w in (self._model_label, self._model_row):
             w.setVisible(True)
         self._save_btn.setText("Save")
-        preset = _PRESETS[self._service.currentText()]
+        preset = self._services[self._service.currentText()]
         is_compat = preset["provider"] == "openai_compat"
         # A preset with a fixed base URL owns it; only "Other" is worth editing.
         editable_url = is_compat and not preset["base_url"]
@@ -268,7 +273,7 @@ class AIChatPanel(QDockWidget):
             self._url.setText(preset["base_url"])
 
     def _settings_from_form(self) -> dict:
-        preset = _PRESETS[self._service.currentText()]
+        preset = self._services[self._service.currentText()]
         return {
             "ai_provider": preset["provider"],
             "ai_base_url": preset["base_url"] or self._url.text().strip(),
@@ -300,7 +305,7 @@ class AIChatPanel(QDockWidget):
         rows = scan_clis()
         found = [c for c in rows if c["path"]]
         listed = "".join(
-            f'  {c["cmd"]:<8}{"✓ " + self._esc(c["path"]) if c["path"] else "✗ not on PATH"}<br>'
+            f'  {c["cmd"]:<12}{"✓ " + self._esc(c["path"]) if c["path"] else "✗ not on PATH"}<br>'
             for c in rows
         )
         self._say_html(
@@ -325,18 +330,12 @@ class AIChatPanel(QDockWidget):
         if not cli["cmd"]:
             self._say_system("Type the command to run first.")
             return
-        try:
-            from rpc_server.rpc_server import start_rpc_server
-
-            self._say_system(start_rpc_server())
-        except Exception as e:
-            self._say_system(f"Could not start the RPC server: {e}")
-        ok, message = _launch_cli(cli)
+        ok, message = launch_agent_cli(cli)
         self._say_system(message if ok else f"Launch failed: {message}")
 
     def _on_load_models(self):
         form = self._settings_from_form()
-        preset = _PRESETS[self._service.currentText()]
+        preset = self._services[self._service.currentText()]
         if preset.get("models"):
             self._on_models_loaded(preset["models"])
             return

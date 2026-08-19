@@ -298,6 +298,42 @@ def write_briefing() -> str:
     return path
 
 
+def launch_agent_cli(cli: dict = None) -> tuple:
+    """Open an agent CLI on this FreeCAD session, briefed, with the port up.
+
+    Shared by the panel's Launch button and the toolbar command so both do the
+    same three things in the same order. Starting the RPC server first is the
+    point of the wrapper: the briefing publishes a port, and a CLI that finds it
+    dead has no way in and no way to explain why.
+
+    ``cli`` omitted means "whatever is installed" — straight through if there is
+    only one, otherwise ask.
+    """
+    from rpc_server.rpc_server import start_rpc_server
+
+    if cli is None:
+        installed = [c for c in scan_clis() if c["path"]]
+        if not installed:
+            wanted = ", ".join(sorted({c["cmd"] for c in scan_clis()}))
+            return False, f"no agent CLI on PATH (looked for {wanted})."
+        if len(installed) == 1:
+            cli = installed[0]
+        else:
+            chosen = _ask_choice(
+                "Launch agent CLI", "Drive FreeCAD from:", [c["name"] for c in installed]
+            )
+            if chosen is None:
+                return False, "cancelled."
+            cli = next(c for c in installed if c["name"] == chosen)
+
+    try:
+        started = start_rpc_server()
+    except Exception as e:
+        started = f"RPC server did not start ({e})"
+    ok, message = _launch_cli(cli)
+    return ok, f"{started} {message}"
+
+
 def _launch_cli(cli: dict) -> tuple:
     """Open a terminal running an agent CLI in the addon directory.
 

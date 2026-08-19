@@ -34,6 +34,7 @@ sys.path.insert(0, _ADDON_DIR)
 # because that globals dict is shared with every other addon's InitGui.
 globals()["_AI_ICON"] = os.path.join(_ADDON_DIR, "icons", "ai_workbench.svg")
 globals()["_AI_BIM_ICON"] = os.path.join(_ADDON_DIR, "icons", "bim_wizard.svg")
+globals()["_AI_CLI_ICON"] = os.path.join(_ADDON_DIR, "icons", "agent_cli.svg")
 
 # AI() / AI_config() / AI_verbose() in the Python console, no import needed.
 try:
@@ -95,6 +96,35 @@ class AIBimWizardCommand:
 Gui.addCommand("AIBimWizardCommand", AIBimWizardCommand())
 
 
+class AILaunchAgentCommand:
+    ICON = _AI_CLI_ICON  # noqa: F821  (see AITogglePanelCommand.ICON)
+
+    def GetResources(self):
+        return {
+            "Pixmap": self.ICON,
+            "MenuText": "Launch Agent CLI",
+            "ToolTip": (
+                "Open Claude Code or Gemini CLI in a terminal, briefed on this "
+                "FreeCAD session, its RPC port and its tools"
+            ),
+        }
+
+    def Activated(self):
+        import FreeCAD
+
+        from rpc_server.console import launch_agent_cli
+
+        ok, message = launch_agent_cli()
+        say = FreeCAD.Console.PrintMessage if ok else FreeCAD.Console.PrintWarning
+        say(f"[AI] {message}\n")
+
+    def IsActive(self):
+        return True
+
+
+Gui.addCommand("AILaunchAgentCommand", AILaunchAgentCommand())
+
+
 class AIAssistantWB(Gui.Workbench):
     MenuText = "AI Assistant"
     ToolTip = "AI assistant, console and MCP server for FreeCAD"
@@ -108,6 +138,7 @@ class AIAssistantWB(Gui.Workbench):
 
         commands = [
             "AITogglePanelCommand",
+            "AILaunchAgentCommand",
             "AIBimWizardCommand",
             "Start_RPC_Server",
             "Stop_RPC_Server",
