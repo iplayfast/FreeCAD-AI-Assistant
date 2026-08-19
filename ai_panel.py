@@ -376,6 +376,9 @@ class AIChatPanel(QDockWidget):
                 # server that answered 401 is the second kind.
                 "key_from": "" if needs_key else None,
                 "models": server["models"],
+                # Distinguishes "answered 401" from "Other", which also shows a
+                # key row but is perfectly usable without one.
+                "needs_key": bool(needs_key),
             }
             self._service.insertItem(index, label)
             added.append(
@@ -431,9 +434,19 @@ class AIChatPanel(QDockWidget):
 
     def _on_load_models(self):
         form = self._settings_from_form()
-        preset = self._services[self._service.currentText()]
+        name = self._service.currentText()
+        preset = self._services[name]
         if preset.get("models"):
             self._on_models_loaded(preset["models"])
+            return
+        # This server already told us it wants a credential. Asking it again
+        # without one just returns the same 401 with its body spelled out in the
+        # log, which reads as a fault rather than as "you have not filled this in".
+        if preset.get("needs_key") and not form["ai_api_key"]:
+            self._say_system(
+                f"{name} refused the model list without a credential. Paste its "
+                "API key in the API key box above and press Load again."
+            )
             return
         self._load_btn.setEnabled(False)
         self._load_btn.setText("…")
@@ -457,6 +470,12 @@ class AIChatPanel(QDockWidget):
         self._model.clear()
         self._model.addItems(models)
         self._model.setCurrentText(current if current in models else (models[0] if models else ""))
+        if not models and self._services[self._service.currentText()].get("needs_key"):
+            # _fetch_models turns any failure into an empty list, so a rejected
+            # key and a server with nothing loaded look identical from here. For
+            # one that authenticates, the key is much the likelier of the two.
+            self._say_system("No models came back — the API key was probably rejected.")
+            return
         self._say_system(f"{len(models)} model(s) available.")
 
     def _on_models_failed(self, message):
