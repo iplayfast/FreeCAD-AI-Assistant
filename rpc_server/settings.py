@@ -28,6 +28,10 @@ _DEFAULT_SETTINGS = {
     # Which slice of the tool registry to advertise; see tools.PROFILES. The full
     # set is ~6700 tokens re-sent every step, which small local models cannot fit.
     "ai_tool_profile": "Everything",
+    # Model round trips allowed in one turn. A build that keeps making
+    # progress can want more; a stuck one is caught by the repeated-failure
+    # check long before this.
+    "ai_max_steps": 25,
 }
 
 

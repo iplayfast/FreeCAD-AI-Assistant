@@ -820,9 +820,11 @@ def AI(prompt: str) -> None:
     # point of it, and that includes agreeing on how much of it to describe.
     from rpc_server.tools import describe_tools
 
+    _s = load_settings()
     session = AgentSession(
         provider, run_tool=run_tool,
-        tools=describe_tools(load_settings().get("ai_tool_profile")),
+        tools=describe_tools(_s.get("ai_tool_profile")),
+        max_steps=int(_s.get("ai_max_steps") or 25),
     )
     _emit(f"[you] {prompt}")
 

@@ -731,7 +731,8 @@ class AIChatPanel(QDockWidget):
                 )
 
         tools = describe_tools(chosen)
-        self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools)
+        self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools,
+                                     max_steps=int(settings.get("ai_max_steps") or 25))
         head = f"Describing {len(tools)} of {len(describe_tools())} tools to the model ({chosen})"
         if window:
             head += f", ~{_profile_tokens(chosen)} of this server's {window} tokens"

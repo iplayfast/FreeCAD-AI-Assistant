@@ -49,6 +49,12 @@ SELECT_SYSTEM = (
 # back to running Python is stuck no matter which specialised tool was picked.
 ALWAYS_SELECTED = ("list_documents", "create_document", "execute_code")
 
+# Identical consecutive failures that mean the model is not going to get there
+# on its own. A step ceiling stops a slow build as readily as a stuck one; what
+# is worth stopping is the absence of progress, and the same tool answering with
+# the same error three times running is what that looks like.
+STUCK_REPEATS = 3
+
 
 def _summary(tool: dict, limit: int = 90) -> str:
     """First sentence of a description, for the selection catalogue."""
@@ -126,6 +132,7 @@ class AgentSession:
         {"type": "done", "stop"}, {"type": "error", "message"}.
         """
         self.messages.append({"role": "user", "content": user_text})
+        last_failure, repeats = None, 0
 
         for _ in range(self.max_steps):
             try:
@@ -161,7 +168,23 @@ class AgentSession:
                     "result": result, "content": content, "is_error": is_error,
                 }
 
-        yield {"type": "error", "message": f"stopped after {self.max_steps} steps"}
+                # Arguments are deliberately not part of the signature: varying
+                # them while the error stays identical is still not progress.
+                signature = (tc.name, content[:200]) if is_error else None
+                repeats = repeats + 1 if signature and signature == last_failure else int(bool(signature))
+                last_failure = signature
+                if repeats >= STUCK_REPEATS:
+                    yield {"type": "error", "message": (
+                        f"{tc.name} failed {repeats} times with the same error, so "
+                        f"this is not progressing: {content[:200]}"
+                    )}
+                    return
+
+        yield {"type": "error", "message": (
+            f"stopped after {self.max_steps} steps. Raise 'ai_max_steps' in the "
+            "settings file if the task genuinely needs more, or ask for one part "
+            "of it at a time."
+        )}
 
 
 def demo() -> None:
@@ -251,5 +274,33 @@ def demo() -> None:
             raise ProviderError("down")
 
     assert select_tools(_Dead(), "x", catalogue) == catalogue
+
+    # Stuck detection: the same tool failing the same way is not progress, and
+    # the run should say so rather than spend the whole step budget on it.
+    boom = [AssistantReply(tool_calls=[ToolCall(f"t{i}", "pad", {"n": i})], stop="tools")
+            for i in range(10)]
+
+    def always_fails(name, args):
+        raise ValueError("Sketch 'X' is over-constrained")
+
+    events = list(AgentSession(_Script(boom), always_fails, tools=tool_defs).run("go"))
+    errors = [e for e in events if e["type"] == "error"]
+    assert errors and "not progressing" in errors[-1]["message"], errors
+    # Stopped at the repeat threshold, not at max_steps.
+    assert len([e for e in events if e["type"] == "tool_call"]) == STUCK_REPEATS, events
+
+    # Varying the arguments while the error stays the same is still not progress.
+    varied = [AssistantReply(tool_calls=[ToolCall(f"v{i}", "pad", {"n": i * 99})], stop="tools")
+              for i in range(10)]
+    events = list(AgentSession(_Script(varied), always_fails, tools=tool_defs).run("go"))
+    assert any("not progressing" in e.get("message", "") for e in events), events
+
+    # A failure that changes each time is someone making progress; let it run.
+    def different_each_time(name, args):
+        raise ValueError(f"distinct failure {args['n']}")
+
+    events = list(AgentSession(_Script(boom), different_each_time, tools=tool_defs,
+                               max_steps=4).run("go"))
+    assert "stopped after 4 steps" in events[-1]["message"], events[-1]
 
     print("agent demo: all checks passed")
