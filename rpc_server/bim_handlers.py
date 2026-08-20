@@ -11,6 +11,7 @@ wall, which is what lets ``get_sketch_geometry`` report the plan back with wall
 labels attached.
 """
 
+import json
 import os
 import re
 
@@ -409,6 +410,91 @@ def get_skill(name: str) -> dict:
         return {"skill": safe, "content": f.read()}
 
 
+_OPS_CACHE: dict = {}
+
+
+def _ops() -> dict:
+    """The bundled FreeCAD operation map, loaded once."""
+    if not _OPS_CACHE:
+        path = os.path.join(_ADDON_DIR, "skills", "freecad_ops.json")
+        with open(path, encoding="utf-8") as f:
+            _OPS_CACHE.update(json.load(f))
+    return _OPS_CACHE
+
+
+@register(
+    "lookup_freecad_op",
+    "Look up how to do a FreeCAD operation this addon has no dedicated tool for "
+    "— fillet, chamfer, revolution, loft, sweep, boolean, Draft, Assembly, "
+    "TechDraw, FEM, Spreadsheet, mesh import/export. Returns the scripted Python "
+    "for each match, what must exist first, what usually follows next, and the "
+    "non-obvious part. Call this BEFORE writing execute_code against an API you "
+    "are not certain of: the scripted FreeCAD API changed at 1.0 and guessing "
+    "produces code that fails on an attribute that no longer exists.",
+    {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What you want to do: 'fillet', 'revolve a sketch', "
+                               "'export STEP', 'linear pattern'.",
+            },
+            "limit": {"type": "integer", "description": "Max matches, default 8."},
+        },
+        "required": ["query"],
+    },
+)
+def lookup_freecad_op(query: str, limit: int = 8) -> dict:
+    data = _ops()
+    words = [w for w in re.split(r"\W+", query.lower()) if len(w) > 2]
+    # "revolve" has to find "Revolution", "extrude" has to find "Extrusion". A
+    # 5-character prefix covers the endings FreeCAD's command names actually use
+    # without pulling in everything that merely starts the same way.
+    terms = set(words) | {w[:5] for w in words if len(w) > 5}
+
+    haystacks = []
+    for category, entries in data["tools"].items():
+        for entry in entries:
+            hay = " ".join(str(entry.get(k, "")) for k in ("id", "py", "note")).lower()
+            haystacks.append((category, entry, entry.get("id", "").lower(),
+                              hay + " " + category.lower()))
+
+    # Rare terms decide the answer. Without this, "revolve a sketch" returns
+    # Sketcher commands: "sketch" appears in dozens of entries and outweighs the
+    # one word that actually names what was asked for.
+    weight = {}
+    for term in terms:
+        df = sum(1 for _, _, _, hay in haystacks if term in hay)
+        weight[term] = 1.0 / (1 + df)
+
+    scored = []
+    for category, entry, name, hay in haystacks:
+        score = sum(hay.count(t) * weight[t] for t in terms)
+        # A hit in the command's own name outranks a passing mention in someone
+        # else's note.
+        score += 5 * sum(weight[t] for t in terms if t in name)
+        if score:
+            scored.append((score, category, entry))
+    scored.sort(key=lambda s: -s[0])
+    matches = [
+        {"category": c, **{k: v for k, v in e.items() if v}}
+        for _, c, e in scored[: max(1, min(limit, 20))]
+    ]
+    if not matches:
+        raise ValueError(
+            f"Nothing matches '{query}'. Categories: {', '.join(data['tools'])}."
+        )
+    # The playbook entries are short and are exactly the things that get this
+    # wrong, so they ride along rather than needing a second call.
+    hits = {k: v for k, v in data["failure_playbook"].items()
+            if any(w in k.lower() for w in words)}
+    return {
+        "matches": matches,
+        **({"failure_playbook": hits} if hits else {}),
+        "conventions": data["conventions"],
+    }
+
+
 def demo() -> None:
     """End-to-end check: sketch a room, wall it, cut a door.
 
@@ -477,6 +563,23 @@ from rpc_server.bim_handlers import demo; demo()"``
             raise AssertionError("expected ValueError for an unknown skill")
         except ValueError:
             pass
+
+        # lookup_freecad_op: both relevance rules that were wrong at first.
+        ids = lambda q: [m["id"] for m in lookup_freecad_op(q, limit=4)["matches"]]
+        # Stemming: "revolve" has to reach "Revolution".
+        assert "PartDesign_Revolution" in ids("revolve a sketch"), ids("revolve a sketch")
+        # Rare terms decide: "sketch" appears in dozens of entries and must not
+        # drown out the one word naming what was asked for.
+        assert "Part_Revolve" in ids("revolve a sketch")
+        assert "PartDesign_Chamfer" in ids("chamfer an edge")
+        assert "PartDesign_Mirrored" in ids("mirror a feature")
+        got = lookup_freecad_op("fillet")
+        assert got["matches"] and "conventions" in got, list(got)
+        try:
+            lookup_freecad_op("zzzznotathing")
+            raise AssertionError("expected ValueError for no match")
+        except ValueError as exc:
+            assert "Categories" in str(exc), exc
 
         print("bim_handlers demo: all checks passed")
     finally:

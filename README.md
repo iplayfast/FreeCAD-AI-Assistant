@@ -84,6 +84,7 @@ Stored in `freecad_mcp_settings.json` under FreeCAD's user app data directory,
 | `ai_model` | empty means the provider's default |
 | `ai_api_key` | falls back to `$ANTHROPIC_API_KEY` / `$OPENAI_API_KEY` |
 | `ai_timeout` | seconds to wait for one completion (default 600) |
+| `ai_tool_profile` | which slice of the registry to advertise; see Tool profiles |
 | `auto_start_rpc` | start the RPC server when FreeCAD loads |
 
 The timeout is minutes rather than seconds on purpose: a local server may have to
@@ -97,7 +98,7 @@ which it found, so a missing one is diagnosable rather than merely absent.
 
 ## Tools
 
-43, in four groups:
+44, in four groups:
 
 - **Documents and objects** — create/open/save/export, undo, object creation and
   editing, dependency graph, `execute_code` and `execute_code_async`, FEM
@@ -107,7 +108,23 @@ which it found, so a missing one is diagnosable rather than merely absent.
 - **Inspection** (read-only) — shape validity, mass properties, distance,
   interference, cross sections, sketch info, selection, log.
 - **BIM and reference** — BIM documents, walls from sketches, openings, sketch
-  lines, wiki search, skills.
+  lines, wiki search, skills, and `lookup_freecad_op`.
+
+### Operations without a dedicated tool
+
+Registering a tool for all ~273 FreeCAD commands would cost ~40,000 tokens of
+schema on every request, which is the problem the profiles above exist to solve.
+Instead `lookup_freecad_op` searches a bundled map of them — `skills/freecad_ops.json`
+— and returns the scripted Python, what must exist first, what usually follows,
+and the non-obvious part:
+
+    lookup_freecad_op("revolve a sketch")
+      Part_Revolve            doc.addObject('Part::Revolution', ...)
+      PartDesign_Revolution   body.newObject('PartDesign::Revolution', ...)
+
+273 operations for one 835-character schema. It matters because the scripted
+FreeCAD API changed at 1.0, and a model guessing at it writes code against
+attributes that no longer exist.
 
 `describe_tools()` returns the same list machine-readably.
 
@@ -123,16 +140,24 @@ The **Tools** dropdown picks how much to describe:
 
 | Profile | Tools | ≈ tokens |
 |---|--:|--:|
-| Everything | 43 | 6700 |
-| Core only | 11 | 1600 |
-| PartDesign | 18 | 2800 |
-| PartDesign + inspection | 26 | 3900 |
-| BIM | 18 | 2800 |
-| Core + extras | 21 | 3100 |
+| Everything | 44 | 6900 |
+| Core only | 13 | 1900 |
+| PartDesign | 20 | 3100 |
+| PartDesign + inspection | 28 | 4200 |
+| BIM | 19 | 3050 |
+| Core + extras | 23 | 3500 |
+| Auto — pick per request | varies | ~1400 |
 
 Every profile includes core — a session that cannot create or save a document is
 not a session. A tool's category follows the module that defines it, so new tools
 are grouped without being listed anywhere.
+
+**Auto** asks the model which tools the request needs, against a catalogue of
+names and one-line summaries (~870 tokens, 13% of the full schema), then runs the
+turn with only those. The catalogue is sent once; the schema is sent on every
+step, so a six-step turn drops from ~40,000 tokens to ~9,000. More importantly a
+selected subset fits a 4096-token server *including* `pad` and `sketch_polygon`,
+which the fixed profile that fits that window does not have.
 
 Profiles only affect what is *advertised*. `call_tool` always sees the whole
 registry, so narrowing a profile can never break a caller that asks for a tool by

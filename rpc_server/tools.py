@@ -56,6 +56,15 @@ _MODULE_CATEGORIES = {
     "bim_handlers": "bim",
 }
 
+# Category by module is right except where a tool's module is an accident of
+# where it was written. The reference lookups are defined next to the BIM tools
+# but answer questions about all of FreeCAD, and a session that cannot look up
+# the scripted API is exactly the session that guesses at it.
+_CATEGORY_OVERRIDES = {
+    "lookup_freecad_op": "core",
+    "search_wiki": "core",
+}
+
 _EXTRAS = {
     "create_text_label", "get_active_screenshot", "get_dependency_graph",
     "export_file", "execute_code_async", "run_fem_analysis",
@@ -89,7 +98,8 @@ def register(name: str, description: str, parameters: dict[str, Any]) -> Callabl
         if name in _REGISTRY:
             raise ValueError(f"tool '{name}' is already registered.")
         module = (fn.__module__ or "").rsplit(".", 1)[-1]
-        category = "extras" if name in _EXTRAS else _MODULE_CATEGORIES.get(module, "core")
+        category = _CATEGORY_OVERRIDES.get(name) or (
+            "extras" if name in _EXTRAS else _MODULE_CATEGORIES.get(module, "core"))
         _REGISTRY[name] = Tool(name, description, parameters, fn, category)
         return fn
 
