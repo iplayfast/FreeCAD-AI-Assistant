@@ -502,7 +502,17 @@ def _launch_cli(cli: dict) -> tuple:
     else:
         notes.append(f"read $FREECAD_AI_BRIEFING ({os.path.basename(briefing)})")
 
-    env = {**os.environ, "FREECAD_AI_BRIEFING": briefing}
+    # Running from the AppImage, os.environ carries PYTHONHOME/PYTHONPATH/
+    # LD_LIBRARY_PATH pointing into its private, per-launch mount (e.g.
+    # /tmp/.mount_freecaXXXXXX). Forwarded as-is, any python3 the launched CLI
+    # shells out to inherits that PYTHONHOME and dies on stdlib init ("Fatal
+    # Python error: init_fs_encoding ... No module named 'encodings'") — the
+    # terminal opens and instantly closes, and the launch still reports
+    # success because Popen itself didn't fail. Not an issue outside the
+    # AppImage, where these are unset.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH")}
+    env["FREECAD_AI_BRIEFING"] = briefing
     addon_dir = _addon_dir()
     for term, flag in _TERMINALS:
         if not shutil.which(term):
