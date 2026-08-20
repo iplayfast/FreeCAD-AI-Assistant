@@ -450,17 +450,20 @@ def _namespace_hint(message: str) -> str:
     import re as _re
 
     available = sorted(exec_namespace())
-    # Reversed: in "module 'Sketcher' has no attribute 'addCircle'" the name
-    # worth talking about is the one that was missing, which comes last.
-    quoted = _re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", message)[::-1]
-    for name in quoted:
-        if name in available:
-            return (f" '{name}' is already in scope as a global — use it directly, "
-                    "do not import it or look it up on a module.")
-    for name in quoted:
-        near = difflib.get_close_matches(name, available, n=3, cutoff=0.75)
-        if near:
-            return f" Did you mean {', '.join(near)}? Those are in scope already."
+    # Only the MISSING name is worth talking about, and it is the last one quoted:
+    # "module 'FreeCAD' has no attribute 'addObject'" is about addObject. Looking
+    # at any other quoted name produced the actively misleading "'FreeCAD' is
+    # already in scope" — true, unhelpful, and not what failed.
+    quoted = _re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", message)
+    if not quoted:
+        return ""
+    missing = quoted[-1]
+    if missing in available:
+        return (f" '{missing}' is already in scope as a global — use it directly, "
+                "do not import it or look it up on a module.")
+    near = difflib.get_close_matches(missing, available, n=3, cutoff=0.75)
+    if near:
+        return f" Did you mean {', '.join(near)}? Those are in scope already."
     return ""
 
 
