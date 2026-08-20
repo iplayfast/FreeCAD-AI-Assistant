@@ -65,9 +65,9 @@ def _to_openai(system: str, messages: list[Message]) -> list[dict]:
     for m in messages:
         role = m["role"]
         if role == "user":
-            out.append({"role": "user", "content": m["content"]})
+            out.append({"role": "user", "content": m.get("content") or ""})
         elif role == "assistant":
-            msg: dict[str, Any] = {"role": "assistant", "content": m.get("text") or None}
+            msg: dict[str, Any] = {"role": "assistant", "content": m.get("text") or ""}
             if m.get("tool_calls"):
                 msg["tool_calls"] = [
                     {
@@ -80,7 +80,7 @@ def _to_openai(system: str, messages: list[Message]) -> list[dict]:
             out.append(msg)
         elif role == "tool":
             out.append(
-                {"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["content"]}
+                {"role": "tool", "tool_call_id": m.get("tool_call_id") or "", "content": m.get("content") or ""}
             )
     return out
 
