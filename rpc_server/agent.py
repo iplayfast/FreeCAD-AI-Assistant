@@ -31,6 +31,58 @@ DEFAULT_SYSTEM = (
 )
 
 
+SELECT_SYSTEM = (
+    "You choose which tools another assistant will be given for a FreeCAD task. "
+    "Reply with nothing but the tool names, separated by commas. Choose every "
+    "tool the task plausibly needs, including the ones needed to set up for it — "
+    "a task that pads a sketch also needs to create the document, body and sketch. "
+    "Choosing a few too many is much better than missing one."
+)
+
+# Sent whatever the selection says. A turn that cannot create a document or fall
+# back to running Python is stuck no matter which specialised tool was picked.
+ALWAYS_SELECTED = ("list_documents", "create_document", "execute_code")
+
+
+def _summary(tool: dict, limit: int = 90) -> str:
+    """First sentence of a description, for the selection catalogue."""
+    text = " ".join((tool.get("description") or "").split())
+    return text.split(". ")[0][:limit]
+
+
+def select_tools(provider, user_text: str, tools: list = None) -> list:
+    """Ask the model which tools this request needs, and return just those.
+
+    The full schema is ~6,700 tokens and is re-sent on every step of the turn;
+    the name-and-summary catalogue this asks against is ~870, and is sent once.
+    A six-step turn goes from ~40,000 tokens to ~9,000, and the subset still fits
+    a context that the whole schema does not — which is the real point, because
+    it means a small local model gets `pad` and `sketch_polygon` rather than
+    whichever fixed profile happened to fit.
+
+    Never returns nothing: an unparseable answer falls back to the full set, on
+    the grounds that a slow turn beats a turn that cannot do the job.
+    """
+    tools = describe_tools() if tools is None else tools
+    catalogue = "\n".join(
+        f"{t['name']}: {_summary(t)}" for t in sorted(tools, key=lambda t: t["name"])
+    )
+    prompt = f"Tools:\n{catalogue}\n\nTask:\n{user_text}\n\nTool names:"
+    try:
+        reply = provider.complete(SELECT_SYSTEM, [{"role": "user", "content": prompt}], [])
+    except ProviderError:
+        return tools
+
+    # Substring matching rather than parsing a list: models answer this with
+    # bullets, prose, or JSON depending on the day, and every one of those still
+    # contains the names.
+    answered = (reply.text or "")
+    chosen = {t["name"] for t in tools if t["name"] in answered}
+    chosen |= {t["name"] for t in tools if t["name"] in ALWAYS_SELECTED}
+    picked = [t for t in tools if t["name"] in chosen]
+    return picked if len(picked) > len(ALWAYS_SELECTED) else tools
+
+
 def _tool_content(result: Any) -> str:
     """Serialise a tool result for the model. Images aren't stringified into the
     context — a placeholder goes to the model; the console shows the real image."""
@@ -51,7 +103,11 @@ class AgentSession:
     ):
         self.provider = provider
         self._run_tool = run_tool
-        self.tools = describe_tools() if tools is None else tools
+        # ``tools`` is what gets sent; ``all_tools`` is the pool it was chosen
+        # from, kept so a per-turn selection narrows from the configured profile
+        # rather than from whatever the last turn happened to settle on.
+        self.all_tools = describe_tools() if tools is None else tools
+        self.tools = list(self.all_tools)
         self.system = system
         self.max_steps = max_steps
         self.messages: list[Message] = []
@@ -154,5 +210,40 @@ def demo() -> None:
 
     # Image results aren't stringified into the model context.
     assert _tool_content({"mime_type": "image/png", "data": "AAAA" * 99}) == "[image displayed to the user]"
+
+    # select_tools: the answer format is whatever the model felt like, so the
+    # parse has to survive prose, bullets and JSON, and never return nothing.
+    catalogue = [
+        {"name": n, "description": f"does {n}.", "parameters": {"type": "object", "properties": {}}}
+        for n in ("create_document", "create_body", "create_sketch", "pad",
+                  "execute_code", "list_documents", "run_fem_analysis", "search_wiki")
+    ]
+
+    class _Says:
+        def __init__(self, text):
+            self.text = text
+
+        def complete(self, system, messages, tools):
+            assert tools == [], "the selection call must not send the schema it is choosing from"
+            return AssistantReply(text=self.text, stop="end")
+
+    for answer in ("create_body, create_sketch, pad",
+                   "- create_body\n- create_sketch\n- pad\n",
+                   '{"tools": ["create_body", "create_sketch", "pad"]}',
+                   "You'll want create_body, then create_sketch, then pad."):
+        picked = {t["name"] for t in select_tools(_Says(answer), "make a plate", catalogue)}
+        assert {"create_body", "create_sketch", "pad"} <= picked, (answer, picked)
+        assert set(ALWAYS_SELECTED) <= picked, (answer, picked)
+        assert "run_fem_analysis" not in picked, (answer, picked)
+
+    # Nothing recognisable, or a dead provider: fall back to everything rather
+    # than to a turn that cannot act.
+    assert select_tools(_Says("I am not sure."), "x", catalogue) == catalogue
+
+    class _Dead:
+        def complete(self, *a):
+            raise ProviderError("down")
+
+    assert select_tools(_Dead(), "x", catalogue) == catalogue
 
     print("agent demo: all checks passed")

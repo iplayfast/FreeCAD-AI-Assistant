@@ -30,7 +30,7 @@ except ImportError:
     )
     from PySide.QtCore import QEvent, QObject, Qt, QThread, Signal
 
-from rpc_server.agent import AgentSession
+from rpc_server.agent import AgentSession, select_tools
 from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
 from rpc_server.providers import ProviderError, make_provider, set_wire_logger
 from rpc_server.settings import load_settings, save_settings
@@ -54,6 +54,11 @@ _TOOL_TIMEOUT = 600   # a recompute or solver run is the slow part, not the queu
 # unusable long before it tells you anything the first copy did not.
 _WIRE_LIMIT = 20000
 
+# Not a PROFILES entry: it is not a fixed set of categories but an extra
+# round trip that picks per request. Chosen from whichever profile is
+# configured, so the two compose.
+_AUTO = "Auto — pick per request"
+
 _panel_instance = None
 
 
@@ -73,13 +78,21 @@ class _AgentWorker(QThread):
 
     event = Signal(object)
 
-    def __init__(self, session, prompt):
+    def __init__(self, session, prompt, select=False):
         super().__init__()
         self._session = session
         self._prompt = prompt
+        self._select = select
 
     def run(self):
         try:
+            if self._select:
+                # Off the GUI thread, because it is another HTTP round trip.
+                picked = select_tools(self._session.provider, self._prompt,
+                                      self._session.all_tools)
+                self._session.tools = picked
+                self.event.emit({"type": "selected",
+                                 "names": [t["name"] for t in picked]})
             for event in self._session.run(self._prompt):
                 self.event.emit(event)
         except Exception as e:
@@ -262,7 +275,7 @@ class AIChatPanel(QDockWidget):
 
         self._profile_label = QLabel("Tools:")
         self._profile = QComboBox()
-        self._profile.addItems(list(PROFILES))
+        self._profile.addItems(list(PROFILES) + [_AUTO])
         self._profile.setToolTip(
             "How much of the tool registry to describe to the model. The full "
             "set is resent on every step, so a narrower profile is what makes "
@@ -690,6 +703,9 @@ class AIChatPanel(QDockWidget):
         # work with the RPC server switched off.
         ensure_gui_pump()
         profile = settings.get("ai_tool_profile")
+        self._auto = profile == _AUTO
+        if self._auto:
+            profile = "Everything"
         # Discovery asked the server how big its window is, so a request that
         # cannot fit is knowable here rather than by being refused. Sending it
         # anyway to honour the setting means a guaranteed failure, and saying so
@@ -755,7 +771,7 @@ class AIChatPanel(QDockWidget):
         self._set_busy(True)
         self._said_something = False
 
-        self._worker = _AgentWorker(session, text)
+        self._worker = _AgentWorker(session, text, select=getattr(self, "_auto", False))
         self._worker.event.connect(self._on_event)
         self._worker.finished.connect(self._on_run_finished)
         self._worker.start()
@@ -776,6 +792,12 @@ class AIChatPanel(QDockWidget):
             body = event["content"] if event["is_error"] else _short(event["result"], 300)
             self._say_html(
                 f'<code style="color:{colour}">◀ {self._esc(body)}</code>'
+            )
+        elif kind == "selected":
+            names = event["names"]
+            self._say_system(
+                f"Chose {len(names)} of {len(self._session.all_tools)} tools for this "
+                f"request: {', '.join(names)}."
             )
         elif kind == "error":
             self._say_system(f"Error: {event['message']}")
