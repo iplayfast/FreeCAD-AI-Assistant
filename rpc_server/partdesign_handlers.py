@@ -59,26 +59,6 @@ def _obj(doc, name: str, kind: str | None = None):
     return o
 
 
-def _require_solvable(sk) -> None:
-    """Refuse to build on a sketch the solver cannot resolve.
-
-    Padding a conflicting sketch produces a feature whose Shape is null, and the
-    only symptom is OCC's "NULL shape" several calls later, from whatever next
-    touches it. Worse, the broken feature is now in the document and has to be
-    cleaned up. Say which constraints conflict, and how to clear them, before
-    anything is created.
-    """
-    sk.solve()
-    conflicting = list(sk.ConflictingConstraints)
-    if conflicting:
-        raise ValueError(
-            f"Sketch '{sk.Name}' is over-constrained (DoF {int(sk.DoF)}); "
-            f"constraints {conflicting} conflict, so a solid cannot be built from "
-            "it. Call sketch_info with auto_fix=true to drop the redundant ones, "
-            "or remove the constraints you added by hand."
-        )
-
-
 def _state(body) -> dict:
     """Validity and volume, so a caller sees a broken feature where it happened.
 
@@ -241,7 +221,6 @@ def pad(doc_name: str, body_name: str, sketch_name: str, length: float,
     doc = _doc(doc_name)
     body = _obj(doc, body_name, "PartDesign::Body")
     sk = _obj(doc, sketch_name, "Sketcher::SketchObject")
-    _require_solvable(sk)
     f = _helpers()["createPad"](body, sk, length, name, symmetric)
     if reversed:
         f.Reversed = True
@@ -277,7 +256,6 @@ def pocket(doc_name: str, body_name: str, sketch_name: str, length: float,
     body = _obj(doc, body_name, "PartDesign::Body")
     sk = _obj(doc, sketch_name, "Sketcher::SketchObject")
     before = _state(body).get("volume")
-    _require_solvable(sk)
     f = _helpers()["createPocket"](body, sk, length, name,
                                    reversed_=reversed, through_all=through_all)
     doc.recompute()

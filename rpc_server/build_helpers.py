@@ -256,6 +256,27 @@ def addPolygon(sketch, points, closed: bool = True, constrain: bool = True) -> l
     return idx
 
 
+def requireSolvable(sketch) -> None:
+    """Refuse to build on a sketch the solver cannot resolve.
+
+    Padding a conflicting sketch produces a feature whose Shape is null, and OCC
+    only says so later, from whatever next touches it — by which point the broken
+    feature is in the document and has to be cleaned up. Lives here rather than in
+    the tool wrapper because execute_code calling createPad directly is the path
+    that gets used, and it deserves the same guard.
+    """
+    sketch.solve()
+    conflicting = list(sketch.ConflictingConstraints)
+    if conflicting:
+        raise ValueError(
+            f"Sketch '{sketch.Name}' is over-constrained (DoF {int(sketch.DoF)}); "
+            f"constraints {conflicting} conflict, so no solid can be built from it. "
+            "Call sketch_info with auto_fix=true to drop the redundant ones, or "
+            "remove the constraints added by hand. addCircle/addPolygon already "
+            "constrain what they add."
+        )
+
+
 def createPad(body, sketch, height: float, name: str = "", symmetric: bool = False):
     """Pad ``sketch`` by ``height``.
 
@@ -264,6 +285,7 @@ def createPad(body, sketch, height: float, name: str = "", symmetric: bool = Fal
     False — logs a deprecation warning. FreeCAD 1.1+ has ``SideType``; older
     builds get the sketch-offset trick GearWorkBench used instead.
     """
+    requireSolvable(sketch)
     pad = body.Document.addObject("PartDesign::Pad", _suffixed(name, "Pad"))
     body.addObject(pad)
     pad.Profile = sketch
@@ -301,6 +323,7 @@ def createPocket(
 
     ``through_all=True`` ignores ``height`` and cuts the full depth.
     """
+    requireSolvable(sketch)
     pocket = body.Document.addObject("PartDesign::Pocket", _suffixed(name, "Pocket"))
     body.addObject(pocket)
     pocket.Profile = sketch
