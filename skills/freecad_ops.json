@@ -489,6 +489,17 @@
           "pre-0.17 file"
         ],
         "next": []
+      },
+      {
+        "id": "PartDesign_AttachSketchToOriginPlane",
+        "py": "plane = next(f for f in body.Origin.OriginFeatures if f.Role == 'XY_Plane'); sk.AttachmentSupport = [(plane, '')]; sk.MapMode = 'FlatFace'",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "Sketcher_NewSketch"
+        ],
+        "note": "Find the plane by Role, never by OriginFeatures[n]. The order is not guaranteed, and in a document with several bodies doc.getObject('XY_Plane') returns the FIRST body's plane, silently attaching the sketch to the wrong body. AttachmentSupport is the 1.0 name; Support is pre-1.0."
       }
     ],
     "Sketcher_geometry": [
@@ -2841,7 +2852,8 @@
     "'X' is not a document object type": "A property type was passed to addObject. Objects are App::VarSet, PartDesign::Body, Spreadsheet::Sheet; App::PropertyLength / App::PropertyLink are properties and belong in obj.addProperty(...).",
     "parametric dimensions / one place to edit sizes": "App::VarSet (1.0+) or a Spreadsheet. VarSet_Create -> VarSet_AddProperty -> setExpression on the feature or on Constraints.<name>.",
     "make a tube / ring / annulus / bearing race": "No Part::Tube type exists. Cut an inner cylinder out of an outer one: Part.makeCylinder(ro,h).cut(Part.makeCylinder(ri,h)), then wrap in a Part::Feature. See Part_Tube_or_Ring.",
-    "object has no attribute 'CenterOfMass'": "The shape is a Compound, shell or wire, not a single solid. Fuse the pieces (Part_Fuse) or query one solid. mass_properties reports shape_type and the solid count for exactly this reason."
+    "object has no attribute 'CenterOfMass'": "The shape is a Compound, shell or wire, not a single solid. Fuse the pieces (Part_Fuse) or query one solid. mass_properties reports shape_type and the solid count for exactly this reason.",
+    "object has no attribute '<lowercase name>' on a VarSet": "addObject('App::VarSet') creates it EMPTY. Every variable must be created with vs.addProperty('App::PropertyLength','bore','Group','doc') before vs.bore = 8 will work."
   },
   "agent_playbook": [
     "Plan the whole feature tree before creating anything. Rework is expensive because features depend on names.",

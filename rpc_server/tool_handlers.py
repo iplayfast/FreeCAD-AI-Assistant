@@ -489,6 +489,20 @@ def execute_code(code: str) -> dict:
                 "doc). Call lookup_freecad_op for the operation you are attempting."
             ) from None
         raise
+    except AttributeError as exc:
+        # A FreeCAD object has only the properties it was given. Assigning to one
+        # that was never created is the second-commonest way hand-written code
+        # fails here, and it is what a VarSet invites: addObject makes an empty
+        # one, so vs.bore = 8 raises until addProperty has made 'bore' exist.
+        text = str(exc)
+        if "object has no attribute" in text and "App." in text:
+            raise AttributeError(
+                f"{exc}. A FreeCAD object only has the properties it was given. "
+                "Create it first: obj.addProperty('App::PropertyLength', 'bore', "
+                "'Group', 'description'), then assign obj.bore. An App::VarSet "
+                "starts empty. Call lookup_freecad_op('varset') for the sequence."
+            ) from None
+        raise
     return {"output": buf.getvalue()}
 
 

@@ -362,7 +362,20 @@ def search_wiki(query: str) -> dict:
     matches = sorted(((score(p), p) for p in pages if score(p)), reverse=True)
     if not matches:
         near = sorted({p[:-9] for p in pages if any(t in p.lower() for t in terms)})[:10]
-        return {"error": f"No wiki page matches '{query}'.", "suggestions": near}
+        # The wiki is organised by GUI command name, so a scripted API question
+        # — "App::VarSet", "ExpressionEngine" — matches nothing and, when the
+        # title shares no words with any page, matches nothing to suggest either.
+        # A dead end with an empty list is where the model starts guessing, and
+        # the other reference tool is the one that answers this shape of question.
+        return {
+            "error": f"No wiki page matches '{query}'.",
+            "suggestions": near,
+            "try_instead": (
+                "The wiki is indexed by GUI command name. For a scripted API "
+                f"question, call lookup_freecad_op({query!r}) — it maps operations "
+                "to their Python, including types the wiki does not cover."
+            ),
+        }
 
     path = os.path.join(wiki_dir, matches[0][1])
     with open(path, encoding="utf-8", errors="replace") as f:
