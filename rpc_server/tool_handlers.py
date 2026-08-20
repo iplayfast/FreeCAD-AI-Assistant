@@ -12,10 +12,13 @@ follow-up; until then their private ``_*_gui`` copies are the transitional
 duplicate.  # ponytail: transitional dup, remove when RPC delegates to registry
 """
 
+import ast
 import base64
 import contextlib
+import difflib
 import io
 import os
+import re
 import tempfile
 import threading
 
@@ -446,15 +449,12 @@ def _namespace_hint(message: str) -> str:
     on a module when it is a plain function — and the interpreter's message says
     only that the name is absent, which is the least useful true thing.
     """
-    import difflib
-    import re as _re
-
     available = sorted(exec_namespace())
     # Only the MISSING name is worth talking about, and it is the last one quoted:
     # "module 'FreeCAD' has no attribute 'addObject'" is about addObject. Looking
     # at any other quoted name produced the actively misleading "'FreeCAD' is
     # already in scope" — true, unhelpful, and not what failed.
-    quoted = _re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", message)
+    quoted = re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", message)
     if not quoted:
         return ""
     missing = quoted[-1]
@@ -467,85 +467,168 @@ def _namespace_hint(message: str) -> str:
     return ""
 
 
+def _bind_doc(ns: dict, doc_name: str, activate: bool = False) -> None:
+    """Point ``doc`` at ``doc_name`` for this call, or remove it.
+
+    ``exec_namespace()`` is one dict shared by every call and by the async
+    worker thread, so a ``doc`` left behind outlives the call that set it: the
+    next execute_code without a doc_name would find a ``doc`` naming whatever
+    ran last, possibly a document since closed. Clearing it when no doc_name is
+    given keeps the tool's own "there is no 'doc' variable" contract true.
+    # ponytail: still one shared namespace, so an async call racing a sync one
+    # can still swap doc under it. Per-call namespaces if that ever bites.
+    """
+    if not doc_name:
+        ns.pop("doc", None)
+        return
+    try:
+        ns["doc"] = FreeCAD.getDocument(doc_name)
+        if activate:
+            FreeCAD.setActiveDocument(doc_name)
+    except Exception:
+        ns.pop("doc", None)
+        raise ValueError(
+            f"Document '{doc_name}' not found. Open it, or call create_document."
+        ) from None
+
+
+# No regex pre-pass over the source. One was tried, to glue back identifiers a
+# tokenizer had split ("PitchDi a" -> "PitchDia"), and a regex cannot tell code
+# from a string or an attribute from a keyword: the rule that closed the gap
+# after a dotted name also rewrote `sum(f.Length.Value for f in feats)` to
+# `sum(f.Length.Valuef or f in feats)`, which still parses and returns the wrong
+# number. A comprehension over the document is the commonest thing anyone
+# writes here. Let the syntax error reach the caller; the handler below reports
+# it against the source they actually sent.
+
+
 @register(
     "execute_code",
     "Run Python in FreeCAD on the GUI thread; returns stdout. Prefer the typed "
     "tools when they fit; use execute_code_async for long CPU-bound geometry.\n"
     "Already global, do NOT import: App/FreeCAD, Gui/FreeCADGui, Part, Sketcher, "
-    "post_to_gui, and these PartDesign shortcuts — readyPart(doc, name) (reuses "
-    "an existing body; recreate=True wipes it), createSketch(body, name), "
-    "createPad(body, sketch, height), createPocket(body, sketch, depth), "
-    "createPolar(body, feature, count, angle=360), originPlane(body), "
-    "addCircle(sketch, radius, x=0, y=0), addPolygon(sketch, points), "
-    "constrainPoint, fcVec, toPolar, toCart, mirrorPointsX, clamp, "
-    "vectorDistance, makeBspline, makeBsplineWire.\n"
-    "Sketches should end up fully constrained. Use addCircle(sketch, radius, "
-    "x=0, y=0) and addPolygon(sketch, points) — they add the geometry AND its "
-    "constraints for you. Do not hand-write Sketcher.Constraint calls: the "
-    "point indices and argument forms are easy to get wrong.\n"
-    "For repeated features (bolt holes, spokes, teeth) make ONE feature and "
-    "pattern it: createPolar(body, pocket, 6). Do not build six sketches and "
-    "six pockets — the user can then change the count in one place. `feature` "
-    "is the Pad/Pocket, not its sketch.\n"
-    "Never assign Pad/Pocket .Midplane — deprecated, and assigning it at all "
-    "(even False, even its current value) logs a warning. Use .SideType, one "
-    "of 'One side' (the default), 'Two sides', 'Symmetric'.\n"
+    "Units, Quantity, post_to_gui, and these shortcuts:\n"
+    "  * Parametric variables (VarSet):\n"
+    "      vs = readyVars(doc)           # creates or reuses App::VarSet\n"
+    "      addVar(vs, 'InnerDia', 8.0)             # creates PropertyLength & sets 8.0 mm\n"
+    "      addVar(vs, 'BallCount', 8)              # creates PropertyInteger & sets 8\n"
+    "      bindExpression(sk, 'bore', 'Vars.InnerDia')  # drives constraint/pad from var\n"
+    "  * PartDesign geometry:\n"
+    "      b = readyPart(doc, 'Body')              # creates/reuses body (recreate=False)\n"
+    "      sk = createSketch(b, 'Base')            # attaches to body's XY plane\n"
+    "      addCircle(sk, 20)                       # fully-constrained circle\n"
+    "      createPad(b, sk, 6)                     # pad without deprecation warnings\n"
+    "      createPocket(b, sk, 6)                  # pocket cut\n"
+    "      createPolar(b, pad_or_pocket, 6)        # polar pattern\n"
+    "      originPlane(body), addPolygon(sketch, points), constrainPoint, fcVec\n"
+    "Do NOT prefix these with module names (use readyPart, NOT PartDesign.readyPart).\n"
+    "Sketches should end up fully constrained. Use addCircle and addPolygon — "
+    "they add the geometry AND its constraints for you. Do not hand-write "
+    "Sketcher.Constraint calls.\n"
+    "Never assign Pad/Pocket .Midplane — deprecated; use .SideType ('One side', 'Two sides', 'Symmetric').\n"
     "There is no 'doc' variable — get one first. Example:\n"
     "  doc = App.getDocument('Flange')\n"
+    "  vs = readyVars(doc); addVar(vs, 'Dia', 40); addVar(vs, 'Thick', 6)\n"
     "  b = readyPart(doc, 'Body'); sk = createSketch(b, 'Base')\n"
-    "  addCircle(sk, 20); createPad(b, sk, 6)          # disc\n"
-    "  bore = createSketch(b, 'Bore'); addCircle(bore, 5)\n"
-    "  createPocket(b, bore, 6); doc.recompute()       # centre bore",
+    "  addCircle(sk, 20); createPad(b, sk, 6); doc.recompute()",
     {
         "type": "object",
-        "properties": {"code": {"type": "string", "description": "Python source to execute."}},
+        "properties": {
+            "code": {"type": "string", "description": "Python source to execute."},
+            "doc_name": {"type": "string", "description": "Optional target document name."},
+        },
         "required": ["code"],
     },
 )
-def execute_code(code: str) -> dict:
+def execute_code(code: str, doc_name: str = "") -> dict:
     buf = io.StringIO()
+    ns = exec_namespace()
+    _bind_doc(ns, doc_name, activate=True)
+    try:
+        ast.parse(code)
+    except SyntaxError as exc:
+        raise SyntaxError(
+            f"Python syntax error at line {exc.lineno}: {exc.msg}. "
+            f"Check code syntax: {exc.text}"
+        ) from None
     try:
         with contextlib.redirect_stdout(buf):
-            exec(code, exec_namespace())  # raises on error -> propagated
+            exec(code, ns)  # raises on error -> propagated
+    except SyntaxError as exc:
+        raise SyntaxError(
+            f"Python syntax error at line {exc.lineno}: {exc.msg}. "
+            f"Check code syntax: {exc.text}"
+        ) from None
     except TypeError as exc:
-        # Confusing a property type for an object type is the single most common
-        # way hand-written FreeCAD code fails, and the message says what is wrong
-        # without saying what to do. The caller reads this string and nothing else.
-        if "not a document object type" in str(exc):
+        msg = str(exc)
+        if "not a document object type" in msg:
             raise TypeError(
                 f"{exc}. addObject takes an OBJECT type — 'App::VarSet', "
                 "'PartDesign::Body', 'Spreadsheet::Sheet'. 'App::Property*' are "
                 "PROPERTY types and belong in obj.addProperty(type, name, group, "
-                "doc). Call lookup_freecad_op for the operation you are attempting."
+                "doc). Better: use readyVars(doc) and addVar(vs, name, value)."
+            ) from None
+        if "must be str" in msg and ("argument 2" in msg or "not float" in msg or "not int" in msg):
+            raise TypeError(
+                f"{exc}. obj.addProperty takes (type_str, name_str), e.g. "
+                "obj.addProperty('App::PropertyLength', 'InnerDia'). "
+                "Or use the built-in helper: addVar(varset, 'InnerDia', 8.0)."
             ) from None
         raise
     except (ImportError, NameError) as exc:
-        # The namespace is pre-populated, and the failure is nearly always the
-        # caller reaching for something that is already there under another
-        # access path: `import Gui` when Gui is a global, or a bare name that is
-        # one letter off a helper. Say where the thing actually is.
-        hint = _namespace_hint(str(exc))
+        text = str(exc)
+        if "OCP" in text or "OpenCASCADE" in text:
+            raise ImportError(
+                f"{exc}. OCP / OpenCASCADE is not used in FreeCAD Python. "
+                "Use PartDesign helpers: b = readyPart(doc, 'Body'); sk = createSketch(b, 'Base'); "
+                "addCircle(sk, radius); createPad(b, sk, 6); createPocket(b, sk, 6)."
+            ) from None
+        if "cannot import name" in text and "from 'Part'" in text:
+            raise ImportError(
+                f"{exc}. Part boolean functions are not direct imports. "
+                "Use PartDesign features: readyPart(doc, 'Name'), createSketch, addCircle, createPad, createPocket."
+            ) from None
+        hint = _namespace_hint(text)
         if hint:
             raise type(exc)(f"{exc}.{hint}") from None
         raise
+    except ValueError as exc:
+        msg = str(exc)
+        if "FileName" in msg and "is not set" in msg:
+            raise ValueError(
+                f"{exc}. App.ActiveDocument.save() requires a filename for new documents. "
+                "Use doc.saveAs('/path/to/file.FCStd') or the save_document tool."
+            ) from None
+        raise
     except AttributeError as exc:
-        # A FreeCAD object has only the properties it was given. Assigning to one
-        # that was never created is the second-commonest way hand-written code
-        # fails here, and it is what a VarSet invites: addObject makes an empty
-        # one, so vs.bore = 8 raises until addProperty has made 'bore' exist.
         text = str(exc)
-        # "module 'Sketcher' has no attribute 'addCircle'" — addCircle is one of
-        # ours, injected as a global, and the caller guessed it hangs off the
-        # module it is used with.
         hint = _namespace_hint(text)
         if hint and "has no attribute" in text:
             raise AttributeError(f"{exc}.{hint}") from None
+        if "has no attribute 'value'" in text and "Quantity" in text:
+            raise AttributeError(
+                f"{exc}. FreeCAD Quantity uses uppercase .Value (e.g. q.Value) or float(q)."
+            ) from None
+        if "module 'FreeCAD' has no attribute 'VarSet'" in text or "module 'App' has no attribute 'VarSet'" in text:
+            raise AttributeError(
+                f"{exc}. FreeCAD has no App.VarSet Python class. Check obj.TypeId == 'App::VarSet' "
+                "or use readyVars(doc)."
+            ) from None
+        if "has no attribute 'Properties'" in text:
+            raise AttributeError(
+                f"{exc}. FreeCAD objects have .PropertiesList, not .Properties."
+            ) from None
+        if "has no attribute 'setVariable'" in text:
+            raise AttributeError(
+                f"{exc}. FreeCAD documents have no setVariable method. "
+                "Use vs = readyVars(doc); addVar(vs, 'Name', value)."
+            ) from None
         if "object has no attribute" in text and "App." in text:
             raise AttributeError(
                 f"{exc}. A FreeCAD object only has the properties it was given. "
                 "Create it first: obj.addProperty('App::PropertyLength', 'bore', "
                 "'Group', 'description'), then assign obj.bore. An App::VarSet "
-                "starts empty. Call lookup_freecad_op('varset') for the sequence."
+                "starts empty. Better: use addVar(varset, name, value)."
             ) from None
         raise
     return {"output": buf.getvalue()}
@@ -561,14 +644,19 @@ def execute_code(code: str) -> dict:
     "for completion.",
     {
         "type": "object",
-        "properties": {"code": {"type": "string", "description": "Background-safe Python source."}},
+        "properties": {
+            "code": {"type": "string", "description": "Background-safe Python source."},
+            "doc_name": {"type": "string", "description": "Optional target document name."},
+        },
         "required": ["code"],
     },
 )
-def execute_code_async(code: str) -> dict:
+def execute_code_async(code: str, doc_name: str = "") -> dict:
     def worker() -> None:
         try:
-            exec(code, exec_namespace())
+            ns = exec_namespace()
+            _bind_doc(ns, doc_name)
+            exec(code, ns)
             FreeCAD.Console.PrintMessage("Async code execution completed.\n")
         except Exception as e:
             import traceback as _tb

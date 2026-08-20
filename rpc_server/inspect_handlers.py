@@ -346,6 +346,23 @@ def sketch_info(doc_name: str, sketch_name: str, auto_fix: bool = False) -> dict
     }
 
 
+@register(
+    "check_sketch_geometry",
+    "Inspect and validate sketch constraints, degrees of freedom, and geometry health (alias for sketch_info).",
+    {
+        "type": "object",
+        "properties": {
+            "doc_name": _DOC,
+            "sketch_name": {"type": "string", "description": "Name of the sketch."},
+            "auto_fix": {"type": "boolean", "description": "Auto-fix coincidences/redundancies."},
+        },
+        "required": ["doc_name", "sketch_name"],
+    },
+)
+def check_sketch_geometry(doc_name: str, sketch_name: str, auto_fix: bool = False) -> dict:
+    return sketch_info(doc_name, sketch_name, auto_fix=auto_fix)
+
+
 # What the user is pointing at -------------------------------------------------
 
 @register(

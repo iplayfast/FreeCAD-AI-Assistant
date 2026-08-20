@@ -27,6 +27,13 @@ try:
 except ImportError:  # needs Part/Sketcher; the namespace works fine without it
     HELPERS = {}
 
+# Nothing here bolts invented methods onto the FreeCAD module. getActiveDocument,
+# getUserDocument and getVariableSet were tried and removed: the module is shared
+# with every other workbench in the running instance, and a model that learns
+# `FreeCAD.getVariableSet(...)` here writes code that fails everywhere else. The
+# real names (App.activeDocument, App.getDocument) and the readyVars helper are
+# already in the namespace below, and a wrong one now says so via _namespace_hint.
+
 _exec_globals: dict[str, Any] | None = None
 
 
@@ -51,6 +58,12 @@ def exec_namespace() -> dict[str, Any]:
             _exec_globals["Part"] = Part
         if Sketcher is not None:
             _exec_globals["Sketcher"] = Sketcher
-        # PartDesign shortcuts (createSketch/createPad/...) — see build_helpers.
+        if hasattr(FreeCAD, "Units"):
+            _exec_globals["Units"] = FreeCAD.Units
+            if hasattr(FreeCAD.Units, "Quantity"):
+                _exec_globals["Quantity"] = FreeCAD.Units.Quantity
+            if hasattr(FreeCAD.Units, "Unit"):
+                _exec_globals["Unit"] = FreeCAD.Units.Unit
+        # PartDesign and VarSet shortcuts (readyPart/readyVars/addVar/...) — see build_helpers.
         _exec_globals.update(HELPERS)
     return _exec_globals

@@ -76,23 +76,91 @@ def _state(body) -> dict:
 
 
 @register(
+    "create_varset",
+    "Create the document's App::VarSet (or return the existing one) to store parametric "
+    "dimension variables. Pass a dictionary of variables (e.g. {'InnerDia': 8.0, "
+    "'OuterDia': 22.0, 'BallCount': 8}) to create and initialize them in one step. "
+    "Returns expression_paths — use those verbatim in bind_expression; do not assemble "
+    "a path by hand. Omit `name`: one VarSet per document named 'Vars' is the convention, "
+    "and a second name means half the model reads variables the other half never sees.",
+    {
+        "type": "object",
+        "properties": {
+            "doc_name": _DOC,
+            "name": {"type": "string",
+                     "description": "Name for the VarSet. Omit it — the default 'Vars' is "
+                                    "what every expression example uses."},
+            "variables": {
+                "type": "object",
+                "description": "Key-value mapping of variable names to numbers/values to create.",
+            },
+        },
+        "required": ["doc_name"],
+    },
+)
+def create_varset(doc_name: str, name: str = "Vars", variables: dict[str, Any] | None = None) -> dict:
+    doc = _doc(doc_name)
+    h = _helpers()
+    vs = h["readyVars"](doc, name)
+    paths = {}
+    if variables:
+        for k, v in variables.items():
+            paths[k] = h["addVar"](vs, k, v)
+    doc.recompute()
+    props = {p: str(getattr(vs, p)) for p in vs.PropertiesList if vs.getGroupOfProperty(p) != "Base"}
+    return {"varset_name": vs.Name, "variables": props, "expression_paths": paths}
+
+
+@register(
+    "set_variables",
+    "Set or add parametric dimension variables on an existing App::VarSet. Omit "
+    "`varset_name` for the document's 'Vars'.",
+    {
+        "type": "object",
+        "properties": {
+            "doc_name": _DOC,
+            "varset_name": {"type": "string",
+                            "description": "Name of the VarSet object. Defaults to 'Vars'."},
+            "variables": {
+                "type": "object",
+                "description": "Key-value mapping of variable names to numbers/values to set.",
+            },
+        },
+        "required": ["doc_name", "variables"],
+    },
+)
+def set_variables(doc_name: str, varset_name: str = "Vars", variables: dict[str, Any] | None = None) -> dict:
+    doc = _doc(doc_name)
+    h = _helpers()
+    vs = _obj(doc, varset_name, "App::VarSet")
+    paths = {}
+    for k, v in (variables or {}).items():
+        paths[k] = h["addVar"](vs, k, v)
+    doc.recompute()
+    props = {p: str(getattr(vs, p)) for p in vs.PropertiesList if vs.getGroupOfProperty(p) != "Base"}
+    return {"varset_name": vs.Name, "variables": props, "expression_paths": paths}
+
+
+@register(
     "create_body",
     "Create a PartDesign::Body (or return the existing one of that name).",
     {
         "type": "object",
         "properties": {
             "doc_name": _DOC,
-            "name": {"type": "string", "description": "Name for the body."},
+            "name": {"type": "string", "description": "Name for the body (e.g. 'InnerRing')."},
+            "body_name": {"type": "string", "description": "Alias for name."},
             "recreate": {
                 "type": "boolean",
                 "description": "Delete and rebuild if it already exists. Default false "
                                "- reuse, so an existing model is not silently destroyed.",
             },
         },
-        "required": ["doc_name", "name"],
+        "required": ["doc_name"],
     },
 )
-def create_body(doc_name: str, name: str, recreate: bool = False) -> dict:
+def create_body(doc_name: str, name: str = "", body_name: str = "", recreate: bool = False) -> dict:
+    name = name or body_name or "Body"
     doc = _doc(doc_name)
     body = _helpers()["readyPart"](doc, name, recreate=recreate)
     doc.recompute()
@@ -142,7 +210,9 @@ def create_sketch(doc_name: str, body_name: str, name: str,
 
 @register(
     "sketch_circle",
-    "Add a circle to a sketch, centred at (x, y) in sketch coordinates.",
+    "Add a circle to a sketch, centred at (x, y) in sketch coordinates. "
+    "Tip: You can add multiple concentric circles (e.g. inner bore + outer perimeter) "
+    "to the SAME sketch to pad a hollow ring, tube, bushing, or bearing ring in a single step without needing a pocket.",
     {
         "type": "object",
         "properties": {
@@ -200,8 +270,8 @@ def sketch_polygon(doc_name: str, sketch_name: str, points: list,
 
 @register(
     "pad",
-    "Pad a sketch into its body. Returns the body's validity and volume so a "
-    "failed feature is caught where it happens.",
+    "Pad a sketch into its body. If the sketch contains concentric circles (e.g. inner and outer), "
+    "FreeCAD automatically pads the annular ring (hollow cylinder/tube/bearing ring) directly.",
     {
         "type": "object",
         "properties": {
@@ -267,12 +337,12 @@ def pocket(doc_name: str, body_name: str, sketch_name: str, length: float,
 
 @register(
     "polar_pattern",
-    "Repeat a pad or pocket around a circle. `count` includes the original.",
+    "Repeat a pad, pocket, sphere, or cylinder around a circle. `count` includes the original.",
     {
         "type": "object",
         "properties": {
             "doc_name": _DOC, "body_name": _BODY,
-            "feature_name": {"type": "string", "description": "The Pad or Pocket to repeat."},
+            "feature_name": {"type": "string", "description": "The Pad, Pocket, Sphere or Cylinder to repeat."},
             "count": {"type": "integer"},
             "angle": {"type": "number", "description": "Span in degrees; 360 for a full ring."},
             "name": {"type": "string"},
@@ -286,5 +356,58 @@ def polar_pattern(doc_name: str, body_name: str, feature_name: str, count: int,
     body = _obj(doc, body_name, "PartDesign::Body")
     feat = _obj(doc, feature_name)
     f = _helpers()["createPolar"](body, feat, count, angle, name=name)
+    doc.recompute()
+    return {"feature_name": f.Name, "failed": "Invalid" in f.State, **_state(body)}
+
+
+@register(
+    "create_sphere",
+    "Create a solid sphere (e.g. for bearing balls) in a body or document.",
+    {
+        "type": "object",
+        "properties": {
+            "doc_name": _DOC,
+            "body_name": {"type": "string", "description": "PartDesign::Body name."},
+            "radius": {"type": "number", "description": "Radius of the sphere, mm."},
+            "name": {"type": "string", "description": "Base name (default 'Sphere')."},
+            "x": {"type": "number", "description": "X position offset (e.g. PitchDia/2 for bearing ball)."},
+            "y": {"type": "number", "description": "Y position offset."},
+            "z": {"type": "number", "description": "Z position offset."},
+        },
+        "required": ["doc_name", "body_name", "radius"],
+    },
+)
+def create_sphere(doc_name: str, body_name: str, radius: float, name: str = "Ball",
+                  x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
+    doc = _doc(doc_name)
+    body = _obj(doc, body_name, "PartDesign::Body")
+    f = _helpers()["createSphere"](body, radius, name=name, x=x, y=y, z=z)
+    doc.recompute()
+    return {"feature_name": f.Name, "failed": "Invalid" in f.State, **_state(body)}
+
+
+@register(
+    "create_cylinder",
+    "Create a solid cylinder (e.g. for pins, rollers, shafts) in a body or document.",
+    {
+        "type": "object",
+        "properties": {
+            "doc_name": _DOC,
+            "body_name": {"type": "string", "description": "PartDesign::Body name."},
+            "radius": {"type": "number", "description": "Radius of the cylinder, mm."},
+            "height": {"type": "number", "description": "Height / length of the cylinder, mm."},
+            "name": {"type": "string", "description": "Base name (default 'Cylinder')."},
+            "x": {"type": "number", "description": "X position offset."},
+            "y": {"type": "number", "description": "Y position offset."},
+            "z": {"type": "number", "description": "Z position offset."},
+        },
+        "required": ["doc_name", "body_name", "radius", "height"],
+    },
+)
+def create_cylinder(doc_name: str, body_name: str, radius: float, height: float, name: str = "Cylinder",
+                    x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
+    doc = _doc(doc_name)
+    body = _obj(doc, body_name, "PartDesign::Body")
+    f = _helpers()["createCylinder"](body, radius, height, name=name, x=x, y=y, z=z)
     doc.recompute()
     return {"feature_name": f.Name, "failed": "Invalid" in f.State, **_state(body)}

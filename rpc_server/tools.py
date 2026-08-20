@@ -116,6 +116,9 @@ def load_handlers() -> None:
     seeing different tool sets — which is exactly what happened when each caller
     did its own imports.
     """
+    # A plain import is already idempotent (sys.modules caches it), and it
+    # PROPAGATES. Swallowing the failure here loses a whole category of tools
+    # with no error anywhere, which is the drift this function exists to stop.
     from rpc_server import (  # noqa: F401  (import for side effect: registration)
         bim_handlers,
         inspect_handlers,
@@ -197,12 +200,29 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
     accepted = tool.parameters.get("properties", {})
     required = tool.parameters.get("required", [])
 
+    # Pure synonyms for the SAME value, so they may satisfy a required argument.
+    for synonym in ("doc", "document"):
+        if synonym in args and "doc_name" in accepted and "doc_name" not in args:
+            args["doc_name"] = args.pop(synonym)
+
     missing = [k for k in required if k not in args]
     if missing:
         raise ValueError(
             f"tool '{name}' missing required argument(s): {', '.join(missing)}; "
             f"accepts: {', '.join(accepted) or 'no arguments'}"
         )
+
+    # These cross-fill between DIFFERENT things — a sketch's own name and the
+    # name of the body it sits on — so they run only after the required check.
+    # Before it they silently satisfied it: create_sketch(body_name='Ring') with
+    # no `name` produced a sketch called RingSketch instead of saying what was
+    # missing, and a `pad` missing both names filled them from one stray `name=`.
+    for a, b in (("name", "body_name"), ("name", "sketch_name"),
+                 ("name", "varset_name"), ("name", "obj_name")):
+        if a in args and b not in args and b in accepted:
+            args[b] = args[a]
+        elif b in args and a not in args and a in accepted:
+            args[a] = args[b]
 
     # Unknown keys used to reach the handler and surface as a bare
     # "got an unexpected keyword argument 'x'" TypeError, which names the

@@ -111,6 +111,19 @@ def makeBsplineWire(pts) -> Wire:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_doc(doc):
+    if doc is None:
+        doc = App.ActiveDocument
+        if doc is None:
+            raise ValueError("No active document. Create or open one first.")
+    elif isinstance(doc, str):
+        try:
+            doc = App.getDocument(doc)
+        except Exception:
+            raise ValueError(f"Document '{doc}' not found.")
+    return doc
+
+
 def readyPart(doc, name: str, recreate: bool = False):
     """Return the PartDesign Body called ``name``, creating it if absent.
 
@@ -119,6 +132,7 @@ def readyPart(doc, name: str, recreate: bool = False):
     a user's work when an assistant reuses a name. Reuse is the default here;
     pass ``recreate=True`` for the original behaviour.
     """
+    doc = _resolve_doc(doc)
     part = doc.getObject(name)
     if part is not None:
         if part.TypeId != "PartDesign::Body":
@@ -164,25 +178,51 @@ def _suffixed(name: str, suffix: str) -> str:
     return name if name.lower().endswith(suffix.lower()) else name + suffix
 
 
-def createSketch(body, name: str = ""):
-    """Add a sketch to ``body``, attached to that body's XY plane.
+def _resolve_body(body, doc=None):
+    if isinstance(body, str):
+        doc = _resolve_doc(doc)
+        return readyPart(doc, body)
+    return body
+
+
+def _resolve_sketch(sketch, body=None):
+    if isinstance(sketch, str):
+        if body and hasattr(body, "Document"):
+            doc = body.Document
+        else:
+            doc = App.ActiveDocument
+        if doc:
+            sk = doc.getObject(sketch) or doc.getObject(_suffixed(sketch, "Sketch"))
+            if sk:
+                return sk
+    return sketch
+
+
+def createSketch(body, name: str = "", plane: str = "XY_Plane", offset: float = 0.0):
+    """Add a sketch to ``body``, attached to that body's origin plane (default XY_Plane).
 
     ``name`` gets a "Sketch" suffix, matching the GearWorkBench convention.
     """
+    body = _resolve_body(body)
     sketch = body.Document.addObject("Sketcher::SketchObject", _suffixed(name, "Sketch"))
     body.addObject(sketch)
 
-    plane = originPlane(body)
-    if plane is not None:
+    pl = originPlane(body, plane)
+    if pl is not None:
         # Renamed in FreeCAD 1.0; try the modern spelling first.
         for attr in ("AttachmentSupport", "Support"):
             if hasattr(sketch, attr):
                 try:
-                    setattr(sketch, attr, [(plane, "")])
+                    setattr(sketch, attr, [(pl, "")])
                     sketch.MapMode = "FlatFace"
                     break
                 except (AttributeError, TypeError):
                     continue
+
+    if offset:
+        sketch.AttachmentOffset = App.Placement(
+            App.Vector(0, 0, offset), App.Rotation()
+        )
 
     sketch.Visibility = False
     return sketch
@@ -213,7 +253,7 @@ def constrainPoint(sketch, geo: int, point: int, x: float, y: float) -> None:
 
 
 def addCircle(sketch, radius: float, x: float = 0.0, y: float = 0.0,
-              construction: bool = False) -> int:
+              construction: bool = False, name: str = "") -> int:
     """Add a fully constrained circle; returns its geometry index.
 
     Position and diameter are constrained, so the circle does not drift when
@@ -221,12 +261,19 @@ def addCircle(sketch, radius: float, x: float = 0.0, y: float = 0.0,
     that a circle's centre is point index 3 and that Diameter takes the
     diameter rather than the radius — both easy to get wrong, and wrong
     constraints are worse than none.
+
+    ``name`` names the diameter constraint, which is what makes it bindable:
+    only a NAMED constraint has an expression path, so
+    ``addCircle(sk, 5, name="bore")`` then ``bindExpression(sk, "bore",
+    "Vars.Bore")`` is the whole parametric-hole sequence.
     """
     geo = sketch.addGeometry(
         Part.Circle(App.Vector(x, y, 0), App.Vector(0, 0, 1), radius), construction
     )
     constrainPoint(sketch, geo, 3, x, y)
-    sketch.addConstraint(Sketcher.Constraint("Diameter", geo, radius * 2))
+    dia = sketch.addConstraint(Sketcher.Constraint("Diameter", geo, radius * 2))
+    if name:
+        sketch.renameConstraint(dia, name)
     return geo
 
 
@@ -285,6 +332,8 @@ def createPad(body, sketch, height: float, name: str = "", symmetric: bool = Fal
     False — logs a deprecation warning. FreeCAD 1.1+ has ``SideType``; older
     builds get the sketch-offset trick GearWorkBench used instead.
     """
+    body = _resolve_body(body)
+    sketch = _resolve_sketch(sketch, body)
     requireSolvable(sketch)
     pad = body.Document.addObject("PartDesign::Pad", _suffixed(name, "Pad"))
     body.addObject(pad)
@@ -323,6 +372,8 @@ def createPocket(
 
     ``through_all=True`` ignores ``height`` and cuts the full depth.
     """
+    body = _resolve_body(body)
+    sketch = _resolve_sketch(sketch, body)
     requireSolvable(sketch)
     pocket = body.Document.addObject("PartDesign::Pocket", _suffixed(name, "Pocket"))
     body.addObject(pocket)
@@ -337,47 +388,72 @@ def createPocket(
     return pocket
 
 
+def createSphere(body, radius: float, name: str = "Sphere", x: float = 0.0, y: float = 0.0, z: float = 0.0):
+    """Create a spherical solid feature inside a PartDesign::Body (or Part::Sphere if doc)."""
+    body = _resolve_body(body)
+    if hasattr(body, "TypeId") and body.TypeId == "PartDesign::Body":
+        sph = body.Document.addObject("PartDesign::AdditiveSphere", _suffixed(name, "Sphere"))
+        sph.Radius = float(radius)
+        sph.Placement.Base = App.Vector(float(x), float(y), float(z))
+        body.addObject(sph)
+        body.Tip = sph
+        return sph
+    doc = _resolve_doc(body)
+    sph = doc.addObject("Part::Sphere", _suffixed(name, "Sphere"))
+    sph.Radius = float(radius)
+    sph.Placement.Base = App.Vector(float(x), float(y), float(z))
+    return sph
+
+
+def createCylinder(body, radius: float, height: float, name: str = "Cylinder", x: float = 0.0, y: float = 0.0, z: float = 0.0):
+    """Create a cylindrical solid feature inside a PartDesign::Body (or Part::Cylinder if doc)."""
+    body = _resolve_body(body)
+    if hasattr(body, "TypeId") and body.TypeId == "PartDesign::Body":
+        cyl = body.Document.addObject("PartDesign::AdditiveCylinder", _suffixed(name, "Cylinder"))
+        cyl.Radius = float(radius)
+        cyl.Height = float(height)
+        cyl.Placement.Base = App.Vector(float(x), float(y), float(z))
+        body.addObject(cyl)
+        body.Tip = cyl
+        return cyl
+    doc = _resolve_doc(body)
+    cyl = doc.addObject("Part::Cylinder", _suffixed(name, "Cylinder"))
+    cyl.Radius = float(radius)
+    cyl.Height = float(height)
+    cyl.Placement.Base = App.Vector(float(x), float(y), float(z))
+    return cyl
+
+
 def createPolar(body, feature, count: int, angle: float = 360, sketch=None, name: str = ""):
     """Repeat ``feature`` ``count`` times around a circle. Returns the pattern.
 
-    ``feature`` is a Pad or Pocket — not a sketch. ``count`` includes the
-    original, and ``angle`` spans the pattern: 360 for a ring of bolt holes,
-    less for an arc.
-
-    The rotation axis comes from the feature's own profile sketch, so there is
-    normally nothing else to pass; give ``sketch`` only to rotate about a
-    different sketch's axis. Argument order is load-bearing here: ``sketch``
-    was once positional between ``feature`` and ``count``, and a model called
-    ``createPolar(body, sketch, None, 6)`` — axis and feature swapped — then
-    gave up on patterning entirely. Moved after ``angle`` because the obvious
-    fourth argument is the angle, and that is what the tool description
-    advertises; a signature that disagrees with its own documentation just
-    moves the error one argument along.
-
-    The pattern is made the body's tip: unlike the additive/subtractive
-    features, ``body.newObject`` does not advance the tip by itself, and a
-    pattern that is not the tip computes cleanly, reports "Up-to-date", and has
-    no effect whatsoever on the body's shape.
+    ``feature`` is a Pad, Pocket, or AdditiveSphere/AdditiveCylinder. ``count`` includes the
+    original, and ``angle`` spans the pattern: 360 for a full ring.
     """
+    body = _resolve_body(body)
     if sketch is None:
         profile = getattr(feature, "Profile", None)
         if isinstance(profile, (tuple, list)):
             profile = profile[0] if profile else None
         sketch = profile
-    if sketch is None:
-        raise ValueError(
-            "createPolar needs a sketch to rotate about: pass a Pad/Pocket as "
-            "`feature` (its profile supplies the axis), or pass sketch=... "
-            f"explicitly. Got feature={getattr(feature, 'TypeId', type(feature).__name__)}"
-        )
-    if not hasattr(sketch, "TypeId"):
-        raise ValueError(
-            f"createPolar sketch must be a document object, got {sketch!r}. "
-            "The signature is createPolar(body, feature, count, angle=360)."
-        )
 
     polar = body.newObject("PartDesign::PolarPattern", _suffixed(name, "Polar"))
-    polar.Axis = (sketch, ["N_Axis"])
+    if sketch is not None and hasattr(sketch, "TypeId"):
+        polar.Axis = (sketch, ["N_Axis"])
+    else:
+        # Fallback to body's Z Axis
+        origin = getattr(body, "Origin", None)
+        z_axis = None
+        if origin:
+            for feat in getattr(origin, "OriginFeatures", []):
+                if getattr(feat, "Role", None) == "Z_Axis":
+                    z_axis = feat
+                    break
+        if z_axis:
+            polar.Axis = (z_axis, [""])
+        else:
+            polar.Axis = (body, ["Z_Axis"])
+
     polar.Angle = angle
     polar.Occurrences = count
     polar.Originals = [feature]
@@ -386,6 +462,171 @@ def createPolar(body, feature, count: int, angle: float = 360, sketch=None, name
     feature.Visibility = False
     polar.Visibility = True
     return polar
+
+
+# ---------------------------------------------------------------------------
+# Parametrics — a VarSet, and the expressions that read it
+# ---------------------------------------------------------------------------
+#
+# Hand-written setExpression is where model-driven parametric work burns the
+# most steps, and the reason is that FreeCAD accepts a binding it cannot
+# resolve: `pad.setExpression("Length", "Vars.Nope")` returns None, the
+# recompute leaves the object ['Touched', 'Invalid'], and the property keeps
+# its old value. Nothing raises, so the next thing built on it is wrong for a
+# reason that surfaced nowhere. bindExpression exists to turn that into an
+# exception at the call that caused it.
+
+# Anything numeric becomes a PropertyLength so units follow it. That is not a
+# compromise for counts: a Length var drives an integer property fine — 6 mm
+# into PolarPattern.Occurrences gives 6 occurrences — while an Integer var
+# holding a dimension silently truncates the day someone wants 8.5.
+_VAR_TYPES = {bool: "App::PropertyBool", str: "App::PropertyString"}
+
+
+def readyVars(doc, name: str = "Vars"):
+    """Return the App::VarSet called ``name``, creating it if absent.
+
+    The one place to put dimensions that drive geometry: change the variable,
+    recompute, and every bound feature follows. Reuse (not recreate) is the
+    default for the same reason as readyPart — a second call must not silently
+    destroy the variables the first call's geometry is bound to.
+
+    "Vars" is the canonical name and every caller should take the default. An
+    observed run reached for a VarSet under three names in one document —
+    "varset", "setvar", "bearing_vars" — and then spent four calls failing to
+    read variables off whichever one it had lost track of. One name per document
+    is what makes ``addVar``'s returned path mean anything.
+    """
+    doc = _resolve_doc(doc)
+    varset = doc.getObject(name)
+    if varset is not None:
+        if varset.TypeId != "App::VarSet":
+            raise ValueError(
+                f"'{name}' already exists and is a {varset.TypeId}, not an App::VarSet"
+            )
+        return varset
+
+    varset = doc.addObject("App::VarSet", name)
+    doc.recompute()
+    return varset
+
+
+def addVar(varset, name: str, value, group: str = "Parameters",
+           description: str = "", property_type: str = "") -> str:
+    """Create-or-set one variable. Returns its expression path, e.g. "Vars.Bore".
+
+    Use the returned path in bindExpression rather than assembling one: an
+    App::VarSet asked for a name that is taken gets Vars001, and an expression
+    naming "Vars" then reads the *other* VarSet, or nothing.
+
+    The property type is inferred from ``value`` (numbers -> App::PropertyLength,
+    so "8" means 8 mm and arithmetic keeps its units). Pass ``property_type``
+    for anything else — 'App::PropertyInteger', 'App::PropertyAngle',
+    'App::PropertyString'.
+
+    Setting an existing variable is the same call, so a rebuilt script is
+    idempotent; addProperty on its own raises "already exists".
+    """
+    if isinstance(varset, str):
+        doc = App.ActiveDocument
+        if doc is None:
+            raise ValueError("No active document to find VarSet in.")
+        vs_obj = doc.getObject(varset)
+        if vs_obj is None:
+            varset = readyVars(doc, varset)
+        else:
+            varset = vs_obj
+
+    if not property_type:
+        property_type = _VAR_TYPES.get(type(value), "App::PropertyLength")
+
+    if name in varset.PropertiesList:
+        # Base is FreeCAD's own group (Label, Visibility, ExpressionEngine...).
+        # Without this, addVar(vs, "Label", "x") renames the object and reports
+        # success, and the variable the caller asked for never exists.
+        if varset.getGroupOfProperty(name) == "Base":
+            raise ValueError(
+                f"'{name}' is a built-in property of the VarSet, not a variable. "
+                "Pick another name."
+            )
+    else:
+        varset.addProperty(property_type, name, group, description)
+
+    setattr(varset, name, value)
+    varset.Document.recompute()
+    return f"{varset.Name}.{name}"
+
+
+def _varsHint(doc) -> str:
+    """The expression paths that actually exist in ``doc``, for an error message."""
+    paths = []
+    for obj in doc.Objects:
+        if obj.TypeId != "App::VarSet":
+            continue
+        paths += [f"{obj.Name}.{p}" for p in obj.PropertiesList
+                  if obj.getGroupOfProperty(p) != "Base"]
+    if not paths:
+        return ("This document has no VarSet variables yet: "
+                "vs = readyVars(doc); addVar(vs, 'Bore', 8).")
+    return "Available: " + ", ".join(sorted(paths)[:20])
+
+
+def bindExpression(obj, prop: str, expression: str):
+    """Drive ``obj.prop`` from ``expression``. Returns the value it evaluates to.
+
+        bindExpression(pad, "Length", "Vars.Height")
+        bindExpression(sk, "bore", "Vars.Bore * 2")   # a named sketch constraint
+
+    On a sketch, ``prop`` may be the NAME of a dimensional constraint; the
+    "Constraints." prefix is added here. Only named constraints can be bound —
+    give addCircle a ``name`` or call ``sketch.renameConstraint(index, name)``.
+
+    The expression is evaluated before it is bound, because setExpression alone
+    accepts a reference to a property that does not exist and fails silently
+    afterwards. The document is recomputed so the binding has actually taken by
+    the time this returns.
+    """
+    named = [c.Name for c in getattr(obj, "Constraints", []) if c.Name]
+    bare = prop.split(".", 1)[1] if prop.startswith("Constraints.") else prop
+    if bare in named:
+        target = f"Constraints.{bare}"
+    elif prop in obj.PropertiesList:
+        target = prop
+    elif hasattr(obj, "Constraints"):
+        options = ", ".join(named) if named else (
+            "none — an unnamed constraint has no expression path. Name one with "
+            "sketch.renameConstraint(index, name), or pass name= to addCircle"
+        )
+        raise ValueError(
+            f"Sketch '{obj.Name}' has no constraint named '{bare}' and no property "
+            f"of that name. Named constraints: {options}."
+        )
+    else:
+        dimensional = [p for p in obj.PropertiesList
+                       if p in ("Length", "Length2", "Angle", "Occurrences", "Radius")]
+        raise ValueError(
+            f"{obj.Name} ({obj.TypeId}) has no property '{prop}'. Try one of: "
+            f"{', '.join(dimensional or obj.PropertiesList[:12])}"
+        )
+
+    try:
+        value = obj.evalExpression(expression)
+    except Exception as exc:
+        # setExpression would have taken this without complaint and left the
+        # object Invalid at the next recompute, blaming nothing.
+        raise ValueError(
+            f"Expression '{expression}' does not resolve: {exc}. {_varsHint(obj.Document)}"
+        ) from None
+
+    was_invalid = "Invalid" in obj.State
+    obj.setExpression(target, expression)
+    obj.Document.recompute()
+    if not was_invalid and "Invalid" in obj.State:
+        raise ValueError(
+            f"Binding {obj.Name}.{target} to '{expression}' left it invalid — the "
+            f"value {value} is not usable there (wrong units, or out of range)."
+        )
+    return value
 
 
 # Injected into the execute_code namespace by exec_env.
@@ -400,14 +641,35 @@ HELPERS = {
     "makeBspline": makeBspline,
     "makeBsplineWire": makeBsplineWire,
     "readyPart": readyPart,
+    "ready_part": readyPart,
+    "create_body": readyPart,
+    "createBody": readyPart,
     "originPlane": originPlane,
     "createSketch": createSketch,
+    "create_sketch": createSketch,
     "constrainPoint": constrainPoint,
     "addCircle": addCircle,
+    "add_circle": addCircle,
     "addPolygon": addPolygon,
+    "add_polygon": addPolygon,
     "createPad": createPad,
+    "create_pad": createPad,
     "createPocket": createPocket,
+    "create_pocket": createPocket,
+    "createSphere": createSphere,
+    "create_sphere": createSphere,
+    "createCylinder": createCylinder,
+    "create_cylinder": createCylinder,
     "createPolar": createPolar,
+    "create_polar": createPolar,
+    "readyVars": readyVars,
+    "ready_vars": readyVars,
+    "create_varset": readyVars,
+    "createVarSet": readyVars,
+    "addVar": addVar,
+    "add_var": addVar,
+    "bindExpression": bindExpression,
+    "bind_expression": bindExpression,
 }
 
 
@@ -572,6 +834,91 @@ def demo() -> None:
         wire = makeBsplineWire([[[0, 0], [5, 5], [10, 0]]])
         assert wire.Edges, "expected a wire with edges"
         assert len(makeBspline([[[0, 0], [1, 1], [2, 0]]])) == 1
+
+        # --- Parametrics ---------------------------------------------------
+        vs = readyVars(doc)
+        assert vs.TypeId == "App::VarSet"
+        assert readyVars(doc) is vs, "readyVars must reuse, not make Vars001"
+        assert addVar(vs, "Height", 6) == "Vars.Height"
+        assert addVar(vs, "Bore", 4, description="bore diameter") == "Vars.Bore"
+        assert addVar(vs, "Height", 8) == "Vars.Height", "re-adding must just set"
+        assert vs.Height.Value == 8, vs.Height
+        assert addVar(vs, "Note", "text") == "Vars.Note" and vs.Note == "text"
+        assert addVar(vs, "Flag", True) == "Vars.Flag" and vs.Flag is True
+
+        # A built-in must not be silently overwritten — the label survives.
+        try:
+            addVar(vs, "Label", "hijacked")
+            raise AssertionError("expected a built-in property name to be rejected")
+        except ValueError as e:
+            assert "built-in" in str(e), e
+        assert vs.Label == "Vars", vs.Label
+
+        # Geometry driven by the variables, bound through both paths: a
+        # feature property, and a named sketch constraint.
+        par = readyPart(doc, "Param")
+        psk = createSketch(par, "Plate")
+        addCircle(psk, 10)
+        ppad = createPad(par, psk, 1)
+        doc.recompute()
+        assert bindExpression(ppad, "Length", "Vars.Height").Value == 8
+        assert ppad.Length.Value == 8, ppad.Length
+
+        bsk = createSketch(par, "Bore")
+        addCircle(bsk, 2, name="bore_dia")
+        pk = createPocket(par, bsk, 8)
+        doc.recompute()
+        bindExpression(bsk, "bore_dia", "Vars.Bore")     # bare constraint name
+        bindExpression(pk, "Length", "Vars.Height")
+        doc.recompute()
+        volume = math.pi * 10 ** 2 * 8 - math.pi * 2 ** 2 * 8
+        assert abs(par.Shape.Volume - volume) < 1.0, par.Shape.Volume
+
+        # The point of all this: change ONE variable, and both follow.
+        addVar(vs, "Height", 20)
+        addVar(vs, "Bore", 6)
+        doc.recompute()
+        driven = math.pi * 10 ** 2 * 20 - math.pi * 3 ** 2 * 20
+        assert abs(par.Shape.Volume - driven) < 1.0, par.Shape.Volume
+
+        # An unresolvable reference must raise HERE. setExpression takes it
+        # without complaint and the property silently keeps its old value.
+        try:
+            bindExpression(ppad, "Length", "Vars.Missing")
+            raise AssertionError("expected an unresolvable expression to be rejected")
+        except ValueError as e:
+            assert "does not resolve" in str(e) and "Vars.Bore" in str(e), e
+        assert ppad.Length.Value == 20, "a rejected binding must not disturb the old one"
+
+        # An unnamed constraint has no expression path, and the message has to
+        # say so — this is the wall every hand-written attempt hits.
+        plain = createSketch(par, "Plain")
+        addCircle(plain, 3)
+        try:
+            bindExpression(plain, "nope", "Vars.Bore")
+            raise AssertionError("expected an unnamed constraint to be rejected")
+        except ValueError as e:
+            assert "renameConstraint" in str(e), e
+        try:
+            bindExpression(ppad, "Heigth", "Vars.Height")
+            raise AssertionError("expected a misspelled property to be rejected")
+        except ValueError as e:
+            assert "Length" in str(e), e
+
+        # A second VarSet gets a different Name, and addVar reports the real
+        # one — an expression built by hand from "Vars" would read the first.
+        other = doc.addObject("App::VarSet", "Vars")
+        assert other.Name != "Vars", other.Name
+        assert addVar(other, "Gap", 2) == f"{other.Name}.Gap"
+        assert bindExpression(ppad, "Length", f"{other.Name}.Gap").Value == 2
+
+        # A length variable drives an integer property (why numbers default to
+        # PropertyLength): 4 mm means four occurrences.
+        addVar(vs, "Count", 4)
+        polar2 = createPolar(par, pk, 2)
+        doc.recompute()
+        bindExpression(polar2, "Occurrences", "Vars.Count")
+        assert polar2.Occurrences == 4, polar2.Occurrences
     finally:
         App.closeDocument(doc.Name)
 
