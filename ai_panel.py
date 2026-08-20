@@ -15,7 +15,7 @@ import re
 
 try:
     from PySide2.QtWidgets import (
-        QComboBox, QFormLayout, QGroupBox,
+        QCheckBox, QComboBox, QFormLayout, QGroupBox,
         QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
         QSizePolicy, QTextBrowser, QVBoxLayout, QWidget, QDockWidget,
     )
@@ -23,7 +23,7 @@ try:
     from PySide2.QtGui import QPalette, QTextCursor
 except ImportError:
     from PySide.QtGui import (
-        QComboBox, QFormLayout, QGroupBox,
+        QCheckBox, QComboBox, QFormLayout, QGroupBox,
         QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
         QPalette, QSizePolicy, QTextBrowser, QTextCursor, QVBoxLayout, QWidget,
         QDockWidget,
@@ -32,7 +32,7 @@ except ImportError:
 
 from rpc_server.agent import AgentSession
 from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
-from rpc_server.providers import ProviderError, make_provider
+from rpc_server.providers import ProviderError, make_provider, set_wire_logger
 from rpc_server.settings import load_settings, save_settings
 from rpc_server.tools import PROFILES, call_tool, describe_tools
 
@@ -48,6 +48,11 @@ from rpc_server.console import (
 )
 
 _TOOL_TIMEOUT = 600   # a recompute or solver run is the slow part, not the queue
+
+# One wire body, clipped. The tool schema alone is ~29,000 characters and
+# repeats on every step, so an uncapped dump makes the transcript widget
+# unusable long before it tells you anything the first copy did not.
+_WIRE_LIMIT = 20000
 
 _panel_instance = None
 
@@ -175,6 +180,10 @@ class _SendFilter(QObject):
 
 
 class AIChatPanel(QDockWidget):
+    # The wire tap fires on the worker thread doing the HTTP call. Touching a
+    # widget from there is undefined; a queued signal is the supported way over.
+    wire = Signal(object)
+
     def __init__(self, parent=None):
         super().__init__("AI Assistant", parent)
         self.setObjectName("AIAssistantPanel")
@@ -183,6 +192,7 @@ class AIChatPanel(QDockWidget):
         self._session = None
         self._worker = None
         self._said_something = False
+        self.wire.connect(self._on_wire)
 
         root = QWidget()
         self.setWidget(root)
@@ -259,6 +269,14 @@ class AIChatPanel(QDockWidget):
             "a small local context window usable."
         )
         form.addRow(self._profile_label, self._profile)
+
+        self._verbose = QCheckBox("Show the JSON sent to and received from the model")
+        self._verbose.setToolTip(
+            "Every request and reply, as JSON, in the transcript. Bodies over "
+            f"{_WIRE_LIMIT} characters are clipped."
+        )
+        self._verbose.toggled.connect(self._on_verbose_toggled)
+        form.addRow("Verbose:", self._verbose)
 
         self._cmd_label = QLabel("Command:")
         self._cmd = QLineEdit()
@@ -443,6 +461,34 @@ class AIChatPanel(QDockWidget):
         # session rather than continue one bound to the old endpoint.
         self._session = None
         self._say_system("Settings saved.")
+
+    def _on_verbose_toggled(self, checked: bool):
+        """Install or clear the provider wire tap.
+
+        The tap is a single global in providers.base, shared with the console's
+        AI_verbose(), so the last one to set it wins. That is fine for a debug
+        toggle and beats two parallel logging paths for the same bytes.
+        """
+        set_wire_logger((lambda d, u, b: self.wire.emit((d, u, b))) if checked else None)
+        self._say_system(
+            "Verbose on: every request and reply will be shown as JSON."
+            if checked else "Verbose off."
+        )
+
+    def _on_wire(self, payload):
+        """Render one side of a provider exchange. Runs on the GUI thread."""
+        direction, url, body = payload
+        arrow = {"request": "→", "response": "←", "error": "✗"}.get(direction, "·")
+        try:
+            text = json.dumps(body, indent=2, default=str)
+        except Exception:
+            text = str(body)
+        if len(text) > _WIRE_LIMIT:
+            text = f"{text[:_WIRE_LIMIT]}\n… {len(text) - _WIRE_LIMIT} more characters"
+        self._say_html(
+            f'<b style="color:#6c757d">[wire {arrow}] {self._esc(url)}</b>'
+            f'<pre style="white-space:pre-wrap; font-size:small">{self._esc(text)}</pre>'
+        )
 
     def _on_detect(self):
         self._detect_btn.setEnabled(False)
