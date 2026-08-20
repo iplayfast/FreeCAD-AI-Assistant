@@ -59,6 +59,41 @@ def _obj(doc, name: str, kind: str | None = None):
     return o
 
 
+def _body_of(obj):
+    """The PartDesign::Body ``obj`` lives in, or None if it is loose."""
+    try:
+        owner = obj.getParentGeoFeatureGroup()
+    except Exception:
+        return None
+    return owner if getattr(owner, "TypeId", "") == "PartDesign::Body" else None
+
+
+def _obj_in_body(doc, name: str, kind: str | None, body):
+    """``_obj``, but the object must belong to ``body``.
+
+    pad/pocket/polar_pattern looked their sketch or feature up document-wide.
+    Sketch names are unique per document but a model names them per body, so an
+    observed run called pad(body_name='OuterRing', sketch_name='Sketch') where
+    'Sketch' had been created on InnerRing: it extruded one body's profile into
+    another, reported volume 351.858 and failed=false, and the rest of the
+    bearing was built on top of that. This is the same trap ``originPlane``
+    already avoids by going through body.Origin rather than doc.getObject.
+
+    Loose objects (no parent body) are allowed through — the guard exists to
+    catch a name resolving to the WRONG body, not to invent a new failure.
+    """
+    obj = _obj(doc, name, kind)
+    owner = _body_of(obj)
+    if owner is not None and owner.Name != body.Name:
+        raise ValueError(
+            f"'{name}' belongs to body '{owner.Name}', not '{body.Name}'. "
+            f"Padding one body's sketch into another silently builds the wrong "
+            f"solid. Use a sketch from '{body.Name}' (create_sketch makes one), "
+            f"or pass body_name='{owner.Name}'."
+        )
+    return obj
+
+
 def _state(body) -> dict:
     """Validity and volume, so a caller sees a broken feature where it happened.
 
@@ -290,7 +325,7 @@ def pad(doc_name: str, body_name: str, sketch_name: str, length: float,
         name: str = "", reversed: bool = False, symmetric: bool = False) -> dict:
     doc = _doc(doc_name)
     body = _obj(doc, body_name, "PartDesign::Body")
-    sk = _obj(doc, sketch_name, "Sketcher::SketchObject")
+    sk = _obj_in_body(doc, sketch_name, "Sketcher::SketchObject", body)
     f = _helpers()["createPad"](body, sk, length, name, symmetric)
     if reversed:
         f.Reversed = True
@@ -324,7 +359,7 @@ def pocket(doc_name: str, body_name: str, sketch_name: str, length: float,
            name: str = "", reversed: bool = True, through_all: bool = False) -> dict:
     doc = _doc(doc_name)
     body = _obj(doc, body_name, "PartDesign::Body")
-    sk = _obj(doc, sketch_name, "Sketcher::SketchObject")
+    sk = _obj_in_body(doc, sketch_name, "Sketcher::SketchObject", body)
     before = _state(body).get("volume")
     f = _helpers()["createPocket"](body, sk, length, name,
                                    reversed_=reversed, through_all=through_all)
@@ -354,7 +389,7 @@ def polar_pattern(doc_name: str, body_name: str, feature_name: str, count: int,
                   angle: float = 360.0, name: str = "") -> dict:
     doc = _doc(doc_name)
     body = _obj(doc, body_name, "PartDesign::Body")
-    feat = _obj(doc, feature_name)
+    feat = _obj_in_body(doc, feature_name, None, body)
     f = _helpers()["createPolar"](body, feat, count, angle, name=name)
     doc.recompute()
     return {"feature_name": f.Name, "failed": "Invalid" in f.State, **_state(body)}

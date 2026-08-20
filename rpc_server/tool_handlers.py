@@ -387,8 +387,18 @@ def create_object(
     before = {o.Name for o in doc.Objects}
     create_object_gui(doc_name, obj)  # returns True or raises
     added = [o for o in doc.Objects if o.Name not in before]
-    made = next((o for o in added if o.Name == obj_name), None) or (
-        added[-1] if added else doc.getObject(obj_name))
+    # Type before position. A PartDesign::Body brings an Origin and its six
+    # origin features along with it, so "added" is eight objects and added[-1]
+    # is an origin point. An observed run asked for a Body called InnerRace,
+    # got back {"object_name": "Origin013", "label": "Origin-Point005"} because
+    # the name was taken and the fallback took the last thing to appear, and
+    # every later call then addressed a point instead of the body.
+    made = (
+        next((o for o in added if o.Name == obj_name and o.TypeId == obj_type), None)
+        or next((o for o in added if o.TypeId == obj_type), None)
+        or next((o for o in added if o.Name == obj_name), None)
+        or (added[-1] if added else doc.getObject(obj_name))
+    )
     if made is None:
         return {"object_name": obj_name}
     return {"object_name": made.Name, "label": made.Label,
