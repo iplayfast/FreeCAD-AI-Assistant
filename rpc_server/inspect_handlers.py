@@ -154,15 +154,25 @@ def mass_properties(doc_name: str, obj_name: str, density: float = 0.0) -> dict:
     sh = _shape(doc, obj_name)
     bb = sh.BoundBox
     res = {
+        "shape_type": sh.ShapeType,
+        "solids": len(sh.Solids),
         "volume_mm3": round(sh.Volume, 4),
         "area_mm2": round(sh.Area, 4),
-        "center_of_mass": _xyz(sh.CenterOfMass),
+        # A Compound has no CenterOfMass, and neither does a shell or a wire, so
+        # asking for it unconditionally turned "this object is not a single
+        # solid" into a crash inside the tool. Which it is, is the useful part.
+        "center_of_mass": _xyz(sh.CenterOfMass) if hasattr(sh, "CenterOfMass") else None,
         "bbox": {"xmin": round(bb.XMin, 4), "xmax": round(bb.XMax, 4),
                  "ymin": round(bb.YMin, 4), "ymax": round(bb.YMax, 4),
                  "zmin": round(bb.ZMin, 4), "zmax": round(bb.ZMax, 4),
                  "xlen": round(bb.XLength, 4), "ylen": round(bb.YLength, 4),
                  "zlen": round(bb.ZLength, 4)},
     }
+    if res["center_of_mass"] is None:
+        res["note"] = (
+            f"A {sh.ShapeType} has no centre of mass. It holds {len(sh.Solids)} "
+            "solid(s): fuse them, or ask about one of them, if you need one."
+        )
     if density:
         res["mass_g"] = round(sh.Volume / 1000.0 * density, 4)
     return res
@@ -420,6 +430,28 @@ def demo() -> None:
         # rather than raising - a headless caller gets an answer either way.
         assert "available" in get_log(lines=5), get_log(lines=5)
         assert "available" in get_selection()
+
+        # mass_properties must survive a shape that is not one solid. A Compound
+        # has no CenterOfMass, and asking for it anyway turned "this is not a
+        # single solid" into a crash inside the tool.
+        import Part
+
+        comp = doc.addObject("Part::Feature", "Comp")
+        comp.Shape = Part.makeCompound(
+            [Part.makeBox(1, 1, 1), Part.makeBox(1, 1, 1, FreeCAD.Vector(5, 0, 0))]
+        )
+        doc.recompute()
+        m = mass_properties(doc.Name, "Comp")
+        assert m["shape_type"] == "Compound" and m["solids"] == 2, m
+        assert m["center_of_mass"] is None and "no centre of mass" in m["note"], m
+        assert m["volume_mm3"] == 2.0, m          # still reports what it can
+
+        solid = doc.addObject("Part::Feature", "Solid")
+        solid.Shape = Part.makeBox(2, 2, 2)
+        doc.recompute()
+        m = mass_properties(doc.Name, "Solid")
+        assert m["center_of_mass"] == {"x": 1.0, "y": 1.0, "z": 1.0}, m
+        assert "note" not in m, m
 
         print("inspect_handlers demo: all checks passed")
     finally:

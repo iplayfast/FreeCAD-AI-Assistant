@@ -1343,6 +1343,27 @@
         ],
         "next": [],
         "note": "Everything the Measure workbench does is available directly on Shape. Also Shape.getMomentOfInertia / .Inertia via Shape.MatrixOfInertia."
+      },
+      {
+        "id": "Part_Tube_or_Ring",
+        "py": "ring = Part.makeCylinder(11, 7).cut(Part.makeCylinder(9, 7)); o = doc.addObject('Part::Feature', 'Race'); o.Shape = ring; doc.recompute()",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Part_Fuse",
+          "Part_Cut"
+        ],
+        "note": "There is NO 'Part::Tube' document object type - addObject rejects it. A tube, ring, annulus or bearing race is an outer cylinder cut by an inner one. Part.makeTube(edge, radius) exists but sweeps a pipe along an edge, which is a different thing."
+      },
+      {
+        "id": "Part_Primitive_Types",
+        "py": "doc.addObject('Part::Box','B'); doc.addObject('Part::Cylinder','C'); doc.addObject('Part::Sphere','S'); doc.addObject('Part::Cone','Co'); doc.addObject('Part::Torus','T')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [],
+        "note": "The parametric primitives that actually exist as object types. Anything else - tube, ring, slot, pipe - is built from these with boolean cut or fuse, or scripted with Part.make* and wrapped in a 'Part::Feature'."
       }
     ],
     "Draft": [
@@ -2818,7 +2839,9 @@
     "GUI command did nothing": "Wrong workbench, or the selection/active object was not what the command expects. Prefer the 'py' form.",
     "Fillet/Chamfer ran with no error but nothing changed": "Base is self-referencing: body.Tip was read after newObject() created the feature. Capture the tip first.",
     "'X' is not a document object type": "A property type was passed to addObject. Objects are App::VarSet, PartDesign::Body, Spreadsheet::Sheet; App::PropertyLength / App::PropertyLink are properties and belong in obj.addProperty(...).",
-    "parametric dimensions / one place to edit sizes": "App::VarSet (1.0+) or a Spreadsheet. VarSet_Create -> VarSet_AddProperty -> setExpression on the feature or on Constraints.<name>."
+    "parametric dimensions / one place to edit sizes": "App::VarSet (1.0+) or a Spreadsheet. VarSet_Create -> VarSet_AddProperty -> setExpression on the feature or on Constraints.<name>.",
+    "make a tube / ring / annulus / bearing race": "No Part::Tube type exists. Cut an inner cylinder out of an outer one: Part.makeCylinder(ro,h).cut(Part.makeCylinder(ri,h)), then wrap in a Part::Feature. See Part_Tube_or_Ring.",
+    "object has no attribute 'CenterOfMass'": "The shape is a Compound, shell or wire, not a single solid. Fuse the pieces (Part_Fuse) or query one solid. mass_properties reports shape_type and the solid count for exactly this reason."
   },
   "agent_playbook": [
     "Plan the whole feature tree before creating anything. Rework is expensive because features depend on names.",
