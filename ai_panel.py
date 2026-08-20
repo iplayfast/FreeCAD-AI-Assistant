@@ -254,7 +254,7 @@ class AIChatPanel(QDockWidget):
         # doing the thinking for this session.
         #
         # A vendor that ships a CLI is offered *as* that CLI and not also as a
-        # keyed endpoint — Claude and Gemini are the external CLI rows below, so
+        # keyed endpoint — Claude and Antigravity are the external CLI rows below, so
         # listing them twice would ask for an API key to reach a tool that is
         # already signed in. What is left here is what has no CLI to launch:
         # local and self-hosted servers.

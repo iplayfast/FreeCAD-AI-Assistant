@@ -45,10 +45,10 @@ _PRESETS = {
         "provider": "openai_compat",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "key_from": "aistudio.google.com/apikey",
-        # prompt_flag: gemini takes its opening prompt behind -i; claude and
+        # prompt_flag: agy takes its opening prompt behind -i; claude and
         # codex take it positionally, which is the default here.
-        "cli": {"cmd": "gemini", "name": "Gemini CLI", "config": "~/.gemini/settings.json",
-                "prompt_flag": "-i", "alts": ("gemini-cli",)},
+        "cli": {"cmd": "agy", "name": "Antigravity CLI", "config": "~/.gemini/config/mcp_config.json",
+                "prompt_flag": "-i", "alts": ("antigravity", "gemini", "gemini-cli")},
     },
     "OpenAI": {
         "provider": "openai_compat",
@@ -170,8 +170,8 @@ def scan_clis() -> list:
     import shutil
 
     def resolve(cli: dict) -> dict:
-        # These ship under more than one name — Gemini is `gemini` from the npm
-        # package but `gemini-cli` from a hand-rolled npx wrapper, and looking
+        # These ship under more than one name — Antigravity is `agy` from the
+        # package but `antigravity` from desktop installs, and looking
         # only for the first spelling reports a CLI the user has as missing.
         # ``cmd`` becomes whichever one exists, so the launcher runs that.
         for candidate in (cli["cmd"], *cli.get("alts", ())):
@@ -535,7 +535,7 @@ def _offer_no_key(name: str, preset: dict) -> str:
     """No API key: offer this provider's agent CLI, or the page to buy a key.
 
     Returns "cli", "browser", or "cancel". The CLI button only appears when that
-    CLI is actually installed — Claude Code, Gemini CLI and Codex CLI all speak
+    CLI is actually installed — Claude Code, Antigravity CLI and Codex CLI all speak
     MCP, but offering to launch one that isn't there is just a dead end.
     """
     import shutil
@@ -990,7 +990,7 @@ def demo() -> None:
         # Not Anthropic-specific — every keyed provider has an MCP-speaking CLI.
         before = len(saved)
         for provider, cli_cmd in (("Claude (Anthropic)", "claude"),
-                                  ("Gemini (Google)", "gemini"),
+                                  ("Gemini (Google)", "agy"),
                                   ("OpenAI", "codex")):
             launched.clear()
             m._offer_no_key = lambda name, preset: "cli"

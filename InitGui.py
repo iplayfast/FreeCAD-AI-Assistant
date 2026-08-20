@@ -104,7 +104,7 @@ class AILaunchAgentCommand:
             "Pixmap": self.ICON,
             "MenuText": "Launch Agent CLI",
             "ToolTip": (
-                "Open Claude Code or Gemini CLI in a terminal, briefed on this "
+                "Open Claude Code or Antigravity CLI in a terminal, briefed on this "
                 "FreeCAD session, its RPC port and its tools"
             ),
         }

@@ -23,7 +23,7 @@ anything else OpenAI-compatible works via *Other*, or is found for you — press
 llama.cpp child takes an ephemeral port that changes whenever you load a
 different model, so a fixed list would never find it.
 
-**Agent CLIs** — Claude Code, Gemini CLI, Codex — run in their own terminal on
+**Agent CLIs** — Claude Code, Antigravity CLI (`agy`), Codex — run in their own terminal on
 your existing subscription, and reach FreeCAD from outside. They need no API key
 here, because they already have their own. Pick one and press **Launch**, or use
 the *Launch Agent CLI* toolbar button.
