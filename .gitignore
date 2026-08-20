@@ -13,6 +13,11 @@ AGENT_BRIEFING.md
 *.FCStd
 *.FCBak
 
+# Transcripts and verdicts from test_bearing_run.py. The numbers get quoted in
+# commit messages and issues; the raw logs are per-machine, per-model noise.
+*.log
+test_bearing_exit
+
 # Symlinks out to personal paths, meaningless in a clone:
 #   dimensions.txt                -> ~/Documents/...
 #   FreeCAD-Documentation-Project -> ~/github/FreeCAD-Documentation-Project
