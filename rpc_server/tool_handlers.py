@@ -437,6 +437,33 @@ def delete_object(doc_name: str, obj_name: str) -> dict:
 
 # Code execution ---------------------------------------------------------------
 
+def _namespace_hint(message: str) -> str:
+    """Point a failed name at where it actually lives in the exec namespace.
+
+    execute_code runs with FreeCAD, App, Gui, Part, Sketcher and every
+    build_helpers shortcut already bound. Every one of those has been reached
+    for the wrong way in practice — imported when it is a global, or looked up
+    on a module when it is a plain function — and the interpreter's message says
+    only that the name is absent, which is the least useful true thing.
+    """
+    import difflib
+    import re as _re
+
+    available = sorted(exec_namespace())
+    # Reversed: in "module 'Sketcher' has no attribute 'addCircle'" the name
+    # worth talking about is the one that was missing, which comes last.
+    quoted = _re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", message)[::-1]
+    for name in quoted:
+        if name in available:
+            return (f" '{name}' is already in scope as a global — use it directly, "
+                    "do not import it or look it up on a module.")
+    for name in quoted:
+        near = difflib.get_close_matches(name, available, n=3, cutoff=0.75)
+        if near:
+            return f" Did you mean {', '.join(near)}? Those are in scope already."
+    return ""
+
+
 @register(
     "execute_code",
     "Run Python in FreeCAD on the GUI thread; returns stdout. Prefer the typed "
@@ -489,12 +516,27 @@ def execute_code(code: str) -> dict:
                 "doc). Call lookup_freecad_op for the operation you are attempting."
             ) from None
         raise
+    except (ImportError, NameError) as exc:
+        # The namespace is pre-populated, and the failure is nearly always the
+        # caller reaching for something that is already there under another
+        # access path: `import Gui` when Gui is a global, or a bare name that is
+        # one letter off a helper. Say where the thing actually is.
+        hint = _namespace_hint(str(exc))
+        if hint:
+            raise type(exc)(f"{exc}.{hint}") from None
+        raise
     except AttributeError as exc:
         # A FreeCAD object has only the properties it was given. Assigning to one
         # that was never created is the second-commonest way hand-written code
         # fails here, and it is what a VarSet invites: addObject makes an empty
         # one, so vs.bore = 8 raises until addProperty has made 'bore' exist.
         text = str(exc)
+        # "module 'Sketcher' has no attribute 'addCircle'" — addCircle is one of
+        # ours, injected as a global, and the caller guessed it hangs off the
+        # module it is used with.
+        hint = _namespace_hint(text)
+        if hint and "has no attribute" in text:
+            raise AttributeError(f"{exc}.{hint}") from None
         if "object has no attribute" in text and "App." in text:
             raise AttributeError(
                 f"{exc}. A FreeCAD object only has the properties it was given. "
@@ -883,6 +925,25 @@ def demo() -> None:
             assert spaced["document_name"] in FreeCAD.listDocuments()
         finally:
             FreeCAD.closeDocument(spaced["document_name"])
+
+        # Reaching for something that IS in scope, the wrong way. Every one of
+        # these came off a real transcript.
+        def fails(code):
+            try:
+                execute_code(code)
+            except Exception as exc:
+                return str(exc)
+            raise AssertionError(f"expected a failure from {code!r}")
+
+        assert "already in scope" in fails("import Gui"), fails("import Gui")
+        msg = fails("Sketcher.addCircle(None, 5)")
+        # The name worth naming is the missing attribute, not the module it was
+        # looked for on.
+        assert "'addCircle' is already in scope" in msg, msg
+        msg = fails("createskatch(None, 'x')")
+        assert "Did you mean createSketch" in msg, msg
+        # A genuine mistake with nothing close by is left alone.
+        assert "already in scope" not in fails("zzz_no_such_name()")
 
         print("tool_handlers demo: all checks passed")
     finally:
