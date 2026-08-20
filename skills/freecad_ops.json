@@ -1,2792 +1,2836 @@
 {
- "meta": {
-  "title": "FreeCAD tool map for AI agents",
-  "source": "FreeCAD main branch, command IDs extracted from src/Mod/*",
-  "read_me_first": "Each tool has: id (GUI command for Gui.runCommand), py (scripted equivalent), after (what must exist first), next (what usually follows). Follow `after`/`next` to plan a sequence; use `py` to execute. Prefer py over GUI commands: GUI commands act on the current selection and active object, scripting does not.",
-  "fields": {
-   "id": "Gui.runCommand('<id>', 0) - needs correct selection + active workbench",
-   "py": "Python; App=FreeCAD, Gui=FreeCADGui",
-   "after": "objects/state that must exist before this makes sense",
-   "next": "tools that commonly follow",
-   "note": "the non-obvious part"
-  }
- },
- "conventions": {
-  "imports": "import FreeCAD as App, FreeCADGui as Gui, Part, Sketcher, Draft, Mesh, Import",
-  "recompute": "doc.recompute() after every geometry change. Nothing updates without it. Check obj.State for 'Invalid'/'Touched'.",
-  "active_doc": "doc = App.ActiveDocument or App.newDocument('Name'). App.setActiveDocument(doc.Name) also needed if GUI commands will run.",
-  "active_body": "PartDesign features go into the ACTIVE body. Set it: Gui.ActiveDocument.ActiveView.setActiveObject('pdbody', body). Or skip GUI entirely and use body.newObject(...) which always targets that body.",
-  "workbench": "Gui.activateWorkbench('PartDesignWorkbench') - only needed before Gui.runCommand. Names: PartDesignWorkbench, SketcherWorkbench, PartWorkbench, DraftWorkbench, AssemblyWorkbench, TechDrawWorkbench, FemWorkbench, SpreadsheetWorkbench, MeshWorkbench, CAMWorkbench, BIMWorkbench.",
-  "selection": "Gui.Selection.clearSelection(); Gui.Selection.addSelection(doc.Name, obj.Name, 'Face3'). Subelement names are 1-indexed strings: Vertex1, Edge2, Face3.",
-  "units": "All lengths are mm, angles degrees. Values accept plain floats or 'App.Units.Quantity(\"10 mm\")'.",
-  "vectors": "App.Vector(x,y,z), App.Rotation(axis, angle_deg), App.Placement(pos, rot)",
-  "expressions": "obj.setExpression('Length', 'Spreadsheet.width * 2') - drives a property from a formula. Clear with setExpression('Length', None).",
-  "undo": "doc.openTransaction('name') ... doc.commitTransaction() / doc.abortTransaction(). Wrap multi-step edits so one undo reverts the whole operation."
- },
- "gotchas": [
-  "Topological naming: 'Face3' can point at a different face after any upstream edit. Attach sketches to datum planes or origin planes, not to faces, whenever the model will be parametric.",
-  "A PartDesign Body has exactly one solid. Two disconnected lumps = error. Use a Part Boolean or separate bodies instead.",
-  "First feature in a body must be additive (Pad/Revolution/AdditiveLoft/primitive). A Pocket first will fail.",
-  "Sketches used by Pad/Pocket must be closed and non-self-intersecting. Check sk.Shape.Wires and sk.solve()==0.",
-  "body.newObject() inserts the feature and makes it the tip IMMEDIATELY. Read body.Tip into a variable BEFORE creating a dress-up feature (Fillet/Chamfer/Draft/Thickness), or its Base points at itself and the feature silently does nothing - no exception, no error state, unchanged volume.",
-  "body.Tip is the last feature; body.Shape is the tip's shape. Insert features before the tip with PartDesign_MoveTip.",
-  "Mixing Part booleans and PartDesign features on the same object breaks the parametric chain. Pick one paradigm per body.",
-  "Objects are referenced by .Name (immutable, e.g. 'Pad001'), shown by .Label (user-editable, may duplicate). Always resolve by Name.",
-  "doc.removeObject(name) does not remove dependents; check obj.InList first.",
-  "Sketcher constraint indices: geometry is 0-based; PointPos is 1=start 2=end 3=center. The external/axis geometry uses negative indices (-1=X axis, -2=Y axis, -1,1=origin point).",
-  "Draft tools need a working plane: App.DraftWorkingPlane / Draft.setWorkingPlane, otherwise geometry lands on XY."
- ],
- "tools": {
-  "Document": [
-   {
-    "id": "Std_New",
-    "py": "doc = App.newDocument('Part1')",
-    "after": [],
-    "next": [
-     "PartDesign_Body",
-     "Part_Box",
-     "Draft_Line",
-     "Spreadsheet_CreateSheet",
-     "Assembly_CreateAssembly"
-    ],
-    "note": "Everything needs a document. Root of every tree."
-   },
-   {
-    "id": "Std_Open",
-    "py": "doc = App.openDocument('/path/f.FCStd')",
-    "after": [],
-    "next": [
-     "Std_Refresh"
-    ]
-   },
-   {
-    "id": "Std_Save",
-    "py": "doc.save()  # or doc.saveAs('/path/f.FCStd')",
-    "after": [
-     "Std_New"
-    ],
-    "next": []
-   },
-   {
-    "id": "Std_Refresh",
-    "py": "doc.recompute()",
-    "after": [
-     "any edit"
-    ],
-    "next": [],
-    "note": "Force with doc.recompute(None, True, True) when features are stuck Touched."
-   },
-   {
-    "id": "Std_Delete",
-    "py": "doc.removeObject(obj.Name)",
-    "after": [],
-    "next": [
-     "Std_Refresh"
-    ],
-    "note": "Check obj.InList (dependents) first or you orphan features."
-   },
-   {
-    "id": "Std_Group",
-    "py": "grp = doc.addObject('App::DocumentObjectGroup','Group'); grp.addObject(obj)",
-    "after": [
-     "Std_New"
-    ],
-    "next": []
-   },
-   {
-    "id": "Std_Part",
-    "py": "part = doc.addObject('App::Part','Part')",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "PartDesign_Body",
-     "Assembly_Insert"
-    ],
-    "note": "App::Part is a container with its own Placement - the unit of assembly. Distinct from the Part workbench."
-   },
-   {
-    "id": "Std_LinkMake",
-    "py": "lnk = doc.addObject('App::Link','Link'); lnk.LinkedObject = obj",
-    "after": [
-     "any solid"
-    ],
-    "next": [
-     "Assembly_CreateJointFixed"
-    ],
-    "note": "Lightweight instance. Use for repeated parts instead of copying."
-   },
-   {
-    "id": "Std_Placement",
-    "py": "obj.Placement = App.Placement(App.Vector(10,0,0), App.Rotation(App.Vector(0,0,1), 45))",
-    "after": [
-     "any object"
-    ],
-    "next": []
-   }
+  "meta": {
+    "title": "FreeCAD tool map for AI agents",
+    "source": "FreeCAD main branch, command IDs extracted from src/Mod/*",
+    "read_me_first": "Each tool has: id (GUI command for Gui.runCommand), py (scripted equivalent), after (what must exist first), next (what usually follows). Follow `after`/`next` to plan a sequence; use `py` to execute. Prefer py over GUI commands: GUI commands act on the current selection and active object, scripting does not.",
+    "fields": {
+      "id": "Gui.runCommand('<id>', 0) - needs correct selection + active workbench",
+      "py": "Python; App=FreeCAD, Gui=FreeCADGui",
+      "after": "objects/state that must exist before this makes sense",
+      "next": "tools that commonly follow",
+      "note": "the non-obvious part"
+    }
+  },
+  "conventions": {
+    "imports": "import FreeCAD as App, FreeCADGui as Gui, Part, Sketcher, Draft, Mesh, Import",
+    "recompute": "doc.recompute() after every geometry change. Nothing updates without it. Check obj.State for 'Invalid'/'Touched'.",
+    "active_doc": "doc = App.ActiveDocument or App.newDocument('Name'). App.setActiveDocument(doc.Name) also needed if GUI commands will run.",
+    "active_body": "PartDesign features go into the ACTIVE body. Set it: Gui.ActiveDocument.ActiveView.setActiveObject('pdbody', body). Or skip GUI entirely and use body.newObject(...) which always targets that body.",
+    "workbench": "Gui.activateWorkbench('PartDesignWorkbench') - only needed before Gui.runCommand. Names: PartDesignWorkbench, SketcherWorkbench, PartWorkbench, DraftWorkbench, AssemblyWorkbench, TechDrawWorkbench, FemWorkbench, SpreadsheetWorkbench, MeshWorkbench, CAMWorkbench, BIMWorkbench.",
+    "selection": "Gui.Selection.clearSelection(); Gui.Selection.addSelection(doc.Name, obj.Name, 'Face3'). Subelement names are 1-indexed strings: Vertex1, Edge2, Face3.",
+    "units": "All lengths are mm, angles degrees. Values accept plain floats or 'App.Units.Quantity(\"10 mm\")'.",
+    "vectors": "App.Vector(x,y,z), App.Rotation(axis, angle_deg), App.Placement(pos, rot)",
+    "expressions": "obj.setExpression('Length', 'Spreadsheet.width * 2') - drives a property from a formula. Clear with setExpression('Length', None).",
+    "undo": "doc.openTransaction('name') ... doc.commitTransaction() / doc.abortTransaction(). Wrap multi-step edits so one undo reverts the whole operation."
+  },
+  "gotchas": [
+    "Topological naming: 'Face3' can point at a different face after any upstream edit. Attach sketches to datum planes or origin planes, not to faces, whenever the model will be parametric.",
+    "A PartDesign Body has exactly one solid. Two disconnected lumps = error. Use a Part Boolean or separate bodies instead.",
+    "First feature in a body must be additive (Pad/Revolution/AdditiveLoft/primitive). A Pocket first will fail.",
+    "Sketches used by Pad/Pocket must be closed and non-self-intersecting. Check sk.Shape.Wires and sk.solve()==0.",
+    "body.newObject() inserts the feature and makes it the tip IMMEDIATELY. Read body.Tip into a variable BEFORE creating a dress-up feature (Fillet/Chamfer/Draft/Thickness), or its Base points at itself and the feature silently does nothing - no exception, no error state, unchanged volume.",
+    "body.Tip is the last feature; body.Shape is the tip's shape. Insert features before the tip with PartDesign_MoveTip.",
+    "Mixing Part booleans and PartDesign features on the same object breaks the parametric chain. Pick one paradigm per body.",
+    "Objects are referenced by .Name (immutable, e.g. 'Pad001'), shown by .Label (user-editable, may duplicate). Always resolve by Name.",
+    "doc.removeObject(name) does not remove dependents; check obj.InList first.",
+    "Sketcher constraint indices: geometry is 0-based; PointPos is 1=start 2=end 3=center. The external/axis geometry uses negative indices (-1=X axis, -2=Y axis, -1,1=origin point).",
+    "Draft tools need a working plane: App.DraftWorkingPlane / Draft.setWorkingPlane, otherwise geometry lands on XY."
   ],
-  "PartDesign": [
-   {
-    "id": "PartDesign_Body",
-    "py": "body = doc.addObject('PartDesign::Body','Body')",
-    "after": [
-     "Std_New"
+  "tools": {
+    "Document": [
+      {
+        "id": "Std_New",
+        "py": "doc = App.newDocument('Part1')",
+        "after": [],
+        "next": [
+          "PartDesign_Body",
+          "Part_Box",
+          "Draft_Line",
+          "Spreadsheet_CreateSheet",
+          "Assembly_CreateAssembly"
+        ],
+        "note": "Everything needs a document. Root of every tree."
+      },
+      {
+        "id": "Std_Open",
+        "py": "doc = App.openDocument('/path/f.FCStd')",
+        "after": [],
+        "next": [
+          "Std_Refresh"
+        ]
+      },
+      {
+        "id": "Std_Save",
+        "py": "doc.save()  # or doc.saveAs('/path/f.FCStd')",
+        "after": [
+          "Std_New"
+        ],
+        "next": []
+      },
+      {
+        "id": "Std_Refresh",
+        "py": "doc.recompute()",
+        "after": [
+          "any edit"
+        ],
+        "next": [],
+        "note": "Force with doc.recompute(None, True, True) when features are stuck Touched."
+      },
+      {
+        "id": "Std_Delete",
+        "py": "doc.removeObject(obj.Name)",
+        "after": [],
+        "next": [
+          "Std_Refresh"
+        ],
+        "note": "Check obj.InList (dependents) first or you orphan features."
+      },
+      {
+        "id": "Std_Group",
+        "py": "grp = doc.addObject('App::DocumentObjectGroup','Group'); grp.addObject(obj)",
+        "after": [
+          "Std_New"
+        ],
+        "next": []
+      },
+      {
+        "id": "Std_Part",
+        "py": "part = doc.addObject('App::Part','Part')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "PartDesign_Body",
+          "Assembly_Insert"
+        ],
+        "note": "App::Part is a container with its own Placement - the unit of assembly. Distinct from the Part workbench."
+      },
+      {
+        "id": "Std_LinkMake",
+        "py": "lnk = doc.addObject('App::Link','Link'); lnk.LinkedObject = obj",
+        "after": [
+          "any solid"
+        ],
+        "next": [
+          "Assembly_CreateJointFixed"
+        ],
+        "note": "Lightweight instance. Use for repeated parts instead of copying."
+      },
+      {
+        "id": "Std_Placement",
+        "py": "obj.Placement = App.Placement(App.Vector(10,0,0), App.Rotation(App.Vector(0,0,1), 45))",
+        "after": [
+          "any object"
+        ],
+        "next": []
+      }
     ],
-    "next": [
-     "PartDesign_NewSketch",
-     "PartDesign_Plane",
-     "PartDesign_CompPrimitiveAdditive"
+    "PartDesign": [
+      {
+        "id": "PartDesign_Body",
+        "py": "body = doc.addObject('PartDesign::Body','Body')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "PartDesign_NewSketch",
+          "PartDesign_Plane",
+          "PartDesign_CompPrimitiveAdditive"
+        ],
+        "note": "One body = one contiguous solid. body.newObject(type,name) adds features to THIS body regardless of GUI active object - always prefer it."
+      },
+      {
+        "id": "PartDesign_NewSketch",
+        "py": "sk = body.newObject('Sketcher::SketchObject','Sketch'); sk.AttachmentSupport=[(doc.XY_Plane,'')]; sk.MapMode='FlatFace'",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "Sketcher_CreateRectangle",
+          "PartDesign_Pad",
+          "PartDesign_Revolution"
+        ],
+        "note": "Origin planes: doc.XY_Plane / XZ_Plane / YZ_Plane exist inside every body's Origin. MapMode 'FlatFace' on a plane/face, 'ObjectXY' on a datum."
+      },
+      {
+        "id": "PartDesign_Pad",
+        "py": "pad = body.newObject('PartDesign::Pad','Pad'); pad.Profile = sk; pad.Length = 10; pad.Midplane = False; pad.Reversed = False",
+        "after": [
+          "closed sketch"
+        ],
+        "next": [
+          "PartDesign_NewSketch",
+          "PartDesign_Pocket",
+          "PartDesign_Fillet",
+          "PartDesign_Hole"
+        ],
+        "note": "Type: 0=Length 1=UpToLast 2=UpToFirst 3=UpToFace 4=TwoLengths. UpToFace needs pad.UpToFace=(obj,['Face3'])."
+      },
+      {
+        "id": "PartDesign_Pocket",
+        "py": "p = body.newObject('PartDesign::Pocket','Pocket'); p.Profile = sk; p.Length = 5",
+        "after": [
+          "PartDesign_Pad",
+          "sketch on the solid"
+        ],
+        "next": [
+          "PartDesign_Fillet",
+          "PartDesign_LinearPattern"
+        ],
+        "note": "Subtractive. Same Type enum as Pad; Type=1 (ThroughAll) is the common one."
+      },
+      {
+        "id": "PartDesign_Revolution",
+        "py": "r = body.newObject('PartDesign::Revolution','Revolution'); r.Profile = sk; r.ReferenceAxis = (sk,['V_Axis']); r.Angle = 360",
+        "after": [
+          "closed sketch, axis not crossing profile"
+        ],
+        "next": [
+          "PartDesign_Groove",
+          "PartDesign_Fillet"
+        ],
+        "note": "ReferenceAxis choices: (sk,['V_Axis']), (sk,['H_Axis']), (sk,['Axis0']) for a construction line, or a datum line."
+      },
+      {
+        "id": "PartDesign_Groove",
+        "py": "g = body.newObject('PartDesign::Groove','Groove'); g.Profile = sk; g.ReferenceAxis = (sk,['V_Axis']); g.Angle = 360",
+        "after": [
+          "PartDesign_Revolution"
+        ],
+        "next": [
+          "PartDesign_Fillet"
+        ],
+        "note": "Subtractive revolve."
+      },
+      {
+        "id": "PartDesign_AdditiveLoft",
+        "py": "l = body.newObject('PartDesign::AdditiveLoft','Loft'); l.Profile = sk1; l.Sections = [sk2, sk3]; l.Ruled = False; l.Closed = False",
+        "after": [
+          "2+ sketches on different planes"
+        ],
+        "next": [
+          "PartDesign_Fillet"
+        ],
+        "note": "Section order matters; mismatched vertex counts produce twists."
+      },
+      {
+        "id": "PartDesign_SubtractiveLoft",
+        "py": "body.newObject('PartDesign::SubtractiveLoft','Loft')",
+        "after": [
+          "solid + 2 sketches"
+        ],
+        "next": []
+      },
+      {
+        "id": "PartDesign_AdditivePipe",
+        "py": "p = body.newObject('PartDesign::AdditivePipe','Pipe'); p.Profile = profile_sk; p.Spine = (path_sk, ['Edge1','Edge2']); p.Mode='Frenet'",
+        "after": [
+          "profile sketch + path sketch/edges"
+        ],
+        "next": [
+          "PartDesign_Fillet"
+        ],
+        "note": "Sweep. Spine is (object, [edge names]) - listing all edges of the path is required."
+      },
+      {
+        "id": "PartDesign_SubtractivePipe",
+        "py": "body.newObject('PartDesign::SubtractivePipe','Pipe')",
+        "after": [
+          "solid + profile + path"
+        ],
+        "next": []
+      },
+      {
+        "id": "PartDesign_AdditiveHelix",
+        "py": "h = body.newObject('PartDesign::AdditiveHelix','Helix'); h.Profile = sk; h.ReferenceAxis=(body.Origin.OriginFeatures[2],['']); h.Pitch=5; h.Height=50",
+        "after": [
+          "profile sketch"
+        ],
+        "next": [],
+        "note": "Threads, springs. Mode: 0=pitch-height, 1=pitch-turns, 2=height-turns."
+      },
+      {
+        "id": "PartDesign_SubtractiveHelix",
+        "py": "body.newObject('PartDesign::SubtractiveHelix','Helix')",
+        "after": [
+          "solid + profile"
+        ],
+        "next": [],
+        "note": "The clean way to cut a real thread."
+      },
+      {
+        "id": "PartDesign_Hole",
+        "py": "h = body.newObject('PartDesign::Hole','Hole'); h.Profile = sk; h.Threaded=False; h.HoleCutType='None'; h.Diameter=6; h.Depth=20; h.DepthType='Dimension'",
+        "after": [
+          "sketch of circles on a face"
+        ],
+        "next": [
+          "PartDesign_LinearPattern"
+        ],
+        "note": "Use this, not Pocket, for fasteners: ThreadType='ISOMetricProfile', ThreadSize='M6', HoleCutType='Countersink'/'Counterbore', Tapered, DrillPoint. The sketch circles' diameters are ignored - only their centres are used."
+      },
+      {
+        "id": "PartDesign_CompPrimitiveAdditive",
+        "py": "box = body.newObject('PartDesign::AdditiveBox','Box'); box.Length=10; box.Width=10; box.Height=10",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "PartDesign_Pocket",
+          "PartDesign_Fillet"
+        ],
+        "note": "Types: AdditiveBox, AdditiveCylinder, AdditiveSphere, AdditiveCone, AdditiveEllipsoid, AdditiveTorus, AdditivePrism, AdditiveWedge. Faster than sketch+pad for simple shapes; position via .AttachmentOffset."
+      },
+      {
+        "id": "PartDesign_CompPrimitiveSubtractive",
+        "py": "body.newObject('PartDesign::SubtractiveCylinder','Cyl')",
+        "after": [
+          "existing solid"
+        ],
+        "next": [],
+        "note": "Subtractive{Box,Cylinder,Sphere,Cone,Ellipsoid,Torus,Prism,Wedge}."
+      },
+      {
+        "id": "PartDesign_Fillet",
+        "py": "base = body.Tip; f = body.newObject('PartDesign::Fillet','Fillet'); f.Base = (base, ['Edge1','Edge2']); f.Radius = 2",
+        "after": [
+          "any solid feature"
+        ],
+        "next": [
+          "PartDesign_Chamfer",
+          "PartDesign_NewSketch"
+        ],
+        "note": "CAPTURE body.Tip BEFORE calling newObject - newObject makes the new feature the tip instantly, so f.Base=(body.Tip,...) self-references and the fillet silently does nothing (no error, volume unchanged). Same trap for Chamfer/Draft/Thickness. Select a Face to fillet all its edges. Fillet late - it is the most fragile feature under topological renaming."
+      },
+      {
+        "id": "PartDesign_Chamfer",
+        "py": "base = body.Tip; c = body.newObject('PartDesign::Chamfer','Chamfer'); c.Base = (base, ['Edge1']); c.Size = 1",
+        "after": [
+          "any solid feature"
+        ],
+        "next": [],
+        "note": "Same capture-the-tip-first rule as PartDesign_Fillet. ChamferType: 0=equal 1=two distances 2=distance+angle."
+      },
+      {
+        "id": "PartDesign_Draft",
+        "py": "base = body.Tip; d = body.newObject('PartDesign::Draft','Draft'); d.Base = (base, ['Face1']); d.Angle = 3; d.NeutralPlane = (base, ['Face6'])",
+        "after": [
+          "solid"
+        ],
+        "next": [
+          "PartDesign_Fillet"
+        ],
+        "note": "Same capture-the-tip-first rule as PartDesign_Fillet. Mould release angles. Apply before fillets."
+      },
+      {
+        "id": "PartDesign_Thickness",
+        "py": "base = body.Tip; t = body.newObject('PartDesign::Thickness','Thickness'); t.Base = (base, ['Face6']); t.Value = 2; t.Reversed = True",
+        "after": [
+          "solid"
+        ],
+        "next": [],
+        "note": "Same capture-the-tip-first rule as PartDesign_Fillet. The listed faces are the ones removed (the opening)."
+      },
+      {
+        "id": "PartDesign_LinearPattern",
+        "py": "lp = body.newObject('PartDesign::LinearPattern','LinearPattern'); lp.Transformed = [pocket]; lp.Direction=(sk,['H_Axis']); lp.Length=50; lp.Occurrences=5",
+        "after": [
+          "a feature to repeat"
+        ],
+        "next": [
+          "PartDesign_MultiTransform"
+        ],
+        "note": "Patterns features, not faces. Occurrences includes the original."
+      },
+      {
+        "id": "PartDesign_PolarPattern",
+        "py": "pp = body.newObject('PartDesign::PolarPattern','PolarPattern'); pp.Transformed=[hole]; pp.Axis=(body.Origin.OriginFeatures[2],['']); pp.Angle=360; pp.Occurrences=6",
+        "after": [
+          "a feature to repeat"
+        ],
+        "next": [],
+        "note": "Bolt circles. Angle=360 with n occurrences spaces them evenly (no duplicate at 360)."
+      },
+      {
+        "id": "PartDesign_Mirrored",
+        "py": "m = body.newObject('PartDesign::Mirrored','Mirrored'); m.Transformed=[pad]; m.MirrorPlane=(body.Origin.OriginFeatures[3],[''])",
+        "after": [
+          "a feature"
+        ],
+        "next": []
+      },
+      {
+        "id": "PartDesign_MultiTransform",
+        "py": "body.newObject('PartDesign::MultiTransform','MultiTransform')",
+        "after": [
+          "2+ transforms"
+        ],
+        "next": [],
+        "note": "Chains patterns (linear x polar) so they compound instead of stacking."
+      },
+      {
+        "id": "PartDesign_Scaled",
+        "py": "body.newObject('PartDesign::Scaled','Scaled')",
+        "after": [
+          "a feature"
+        ],
+        "next": [
+          "PartDesign_MultiTransform"
+        ],
+        "note": "Only usable inside a MultiTransform."
+      },
+      {
+        "id": "PartDesign_Plane",
+        "py": "pl = body.newObject('PartDesign::Plane','DatumPlane'); pl.AttachmentSupport=[(doc.XY_Plane,'')]; pl.MapMode='FlatFace'; pl.AttachmentOffset=App.Placement(App.Vector(0,0,25), App.Rotation())",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "PartDesign_NewSketch"
+        ],
+        "note": "THE fix for topological naming: sketch on a datum plane offset from an origin plane instead of on a model face."
+      },
+      {
+        "id": "PartDesign_Line",
+        "py": "body.newObject('PartDesign::Line','DatumLine')",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "PartDesign_Revolution",
+          "PartDesign_PolarPattern"
+        ],
+        "note": "Stable rotation axis."
+      },
+      {
+        "id": "PartDesign_Point",
+        "py": "body.newObject('PartDesign::Point','DatumPoint')",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "PartDesign_Plane"
+        ]
+      },
+      {
+        "id": "PartDesign_CoordinateSystem",
+        "py": "body.newObject('PartDesign::CoordinateSystem','LCS')",
+        "after": [
+          "PartDesign_Body"
+        ],
+        "next": [
+          "Assembly_CreateJointFixed"
+        ],
+        "note": "Local coordinate system - the cleanest joint target in Assembly."
+      },
+      {
+        "id": "PartDesign_ShapeBinder",
+        "py": "sb = body.newObject('PartDesign::ShapeBinder','ShapeBinder'); sb.Support = [(other_obj, ['Face1'])]",
+        "after": [
+          "geometry in another body"
+        ],
+        "next": [
+          "PartDesign_NewSketch"
+        ],
+        "note": "Copies external geometry into this body so you can reference it. Static copy."
+      },
+      {
+        "id": "PartDesign_SubShapeBinder",
+        "py": "sb = body.newObject('PartDesign::SubShapeBinder','Binder'); sb.Support = [(other_obj, ('Face1',))]",
+        "after": [
+          "geometry elsewhere in the document"
+        ],
+        "next": [
+          "PartDesign_NewSketch"
+        ],
+        "note": "Preferred over ShapeBinder: works across App::Part containers and stays linked."
+      },
+      {
+        "id": "PartDesign_Boolean",
+        "py": "b = body.newObject('PartDesign::Boolean','Boolean'); b.Group=[other_body]; b.Type=0",
+        "after": [
+          "2 bodies"
+        ],
+        "next": [],
+        "note": "Type: 0=Fuse 1=Cut 2=Common. Merges another body INTO this one and consumes it."
+      },
+      {
+        "id": "PartDesign_Clone",
+        "py": "c = doc.addObject('PartDesign::FeatureBase','Clone')",
+        "after": [
+          "a body"
+        ],
+        "next": [],
+        "note": "Parametric copy of a whole body."
+      },
+      {
+        "id": "PartDesign_MoveTip",
+        "py": "body.Tip = pad",
+        "after": [
+          "multiple features"
+        ],
+        "next": [
+          "PartDesign_NewSketch"
+        ],
+        "note": "Rewind history to insert a feature in the middle of the tree."
+      },
+      {
+        "id": "PartDesign_MoveFeature",
+        "py": "other_body.addObject(feature)",
+        "after": [
+          "a feature"
+        ],
+        "next": []
+      },
+      {
+        "id": "PartDesign_Migrate",
+        "py": "Gui.runCommand('PartDesign_Migrate',0)",
+        "after": [
+          "pre-0.17 file"
+        ],
+        "next": []
+      }
     ],
-    "note": "One body = one contiguous solid. body.newObject(type,name) adds features to THIS body regardless of GUI active object - always prefer it."
-   },
-   {
-    "id": "PartDesign_NewSketch",
-    "py": "sk = body.newObject('Sketcher::SketchObject','Sketch'); sk.AttachmentSupport=[(doc.XY_Plane,'')]; sk.MapMode='FlatFace'",
-    "after": [
-     "PartDesign_Body"
+    "Sketcher_geometry": [
+      {
+        "id": "Sketcher_NewSketch",
+        "py": "sk = doc.addObject('Sketcher::SketchObject','Sketch'); sk.Placement = App.Placement(App.Vector(0,0,0), App.Rotation())",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Sketcher_CreateLine",
+          "Sketcher_ConstrainDistance"
+        ],
+        "note": "Standalone sketch (Part workflow). Inside PartDesign use PartDesign_NewSketch."
+      },
+      {
+        "id": "Sketcher_EditSketch",
+        "py": "Gui.activeDocument().setEdit(sk.Name)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_CreateLine"
+        ],
+        "note": "Only needed for GUI commands. Scripting never needs edit mode."
+      },
+      {
+        "id": "Sketcher_LeaveSketch",
+        "py": "Gui.activeDocument().resetEdit()",
+        "after": [
+          "edit mode"
+        ],
+        "next": [
+          "PartDesign_Pad"
+        ]
+      },
+      {
+        "id": "Sketcher_CreateLine",
+        "py": "i = sk.addGeometry(Part.LineSegment(App.Vector(0,0,0), App.Vector(10,0,0)), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_ConstrainCoincident",
+          "Sketcher_ConstrainHorizontal"
+        ],
+        "note": "addGeometry returns the index used by every constraint. Second arg True = construction geometry."
+      },
+      {
+        "id": "Sketcher_CreatePolyline",
+        "py": "[sk.addGeometry(Part.LineSegment(pts[i], pts[i+1]), False) for i in range(len(pts)-1)]",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_ConstrainCoincident"
+        ],
+        "note": "Then coincident-constrain each end to the next start, or the profile is not closed."
+      },
+      {
+        "id": "Sketcher_CreateRectangle",
+        "py": "import SketcherGui; sk.addGeometry(Part.LineSegment(...)) x4 + 2 Horizontal + 2 Vertical + 4 Coincident",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_ConstrainDistanceX",
+          "PartDesign_Pad"
+        ],
+        "note": "No single API call. Fastest correct rectangle in script: 4 lines, coincident-chain them, then Horizontal on 0 and 2, Vertical on 1 and 3."
+      },
+      {
+        "id": "Sketcher_CreateCircle",
+        "py": "i = sk.addGeometry(Part.Circle(App.Vector(0,0,0), App.Vector(0,0,1), 5), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_ConstrainRadius",
+          "PartDesign_Pocket"
+        ],
+        "note": "Normal must be (0,0,1) - sketch geometry lives in the sketch's local XY."
+      },
+      {
+        "id": "Sketcher_CreateArc",
+        "py": "sk.addGeometry(Part.ArcOfCircle(Part.Circle(App.Vector(0,0,0),App.Vector(0,0,1),5), 0, 1.57), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_ConstrainTangent"
+        ],
+        "note": "Angles in RADIANS here, unlike everywhere else in FreeCAD."
+      },
+      {
+        "id": "Sketcher_Create3PointArc",
+        "py": "Gui.runCommand('Sketcher_Create3PointArc',0)",
+        "after": [
+          "a sketch"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_CreateEllipseByCenter",
+        "py": "sk.addGeometry(Part.Ellipse(App.Vector(10,0,0), App.Vector(0,5,0), App.Vector(0,0,0)), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [],
+        "note": "Args: major-axis point, minor-axis point, centre."
+      },
+      {
+        "id": "Sketcher_CreateArcOfEllipse",
+        "py": "sk.addGeometry(Part.ArcOfEllipse(Part.Ellipse(...), 0, 1.57), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_CreateArcOfHyperbola",
+        "py": "sk.addGeometry(Part.ArcOfHyperbola(Part.Hyperbola(...), 0, 1), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_CreateArcOfParabola",
+        "py": "sk.addGeometry(Part.ArcOfParabola(Part.Parabola(...), -1, 1), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_CreateBSpline",
+        "py": "sk.addGeometry(Part.BSplineCurve(pts_list), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_BSplineInsertKnot"
+        ],
+        "note": "Use Part.BSplineCurve().interpolate(pts) to pass THROUGH points instead of using them as poles."
+      },
+      {
+        "id": "Sketcher_CreatePeriodicBSpline",
+        "py": "bs = Part.BSplineCurve(); bs.buildFromPolesMultsKnots(poles, mults, knots, True)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [],
+        "note": "Closed spline."
+      },
+      {
+        "id": "Sketcher_CreatePoint",
+        "py": "sk.addGeometry(Part.Point(App.Vector(5,5,0)), False)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "Sketcher_ConstrainSymmetric"
+        ],
+        "note": "Construction points are excellent stable references."
+      },
+      {
+        "id": "Sketcher_CreatePolygon",
+        "py": "Gui.runCommand('Sketcher_CreateHexagon',0)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [],
+        "note": "Variants: Sketcher_CreateTriangle/Square/Pentagon/Hexagon/Heptagon/Octagon/RegularPolygon. Scripted: build n lines + a construction circle + Equal constraints."
+      },
+      {
+        "id": "Sketcher_CreateSlot",
+        "py": "Gui.runCommand('Sketcher_CreateSlot',0)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [],
+        "note": "Also Sketcher_CreateArcSlot, Sketcher_CreateOblong (rounded rectangle)."
+      },
+      {
+        "id": "Sketcher_CreateFillet",
+        "py": "sk.fillet(geoId1, pos1, geoId2, pos2, radius, True)",
+        "after": [
+          "2 connected lines"
+        ],
+        "next": [],
+        "note": "Sketch-level fillet; cheaper than a solid fillet and immune to face renaming."
+      },
+      {
+        "id": "Sketcher_CreateChamfer",
+        "py": "Gui.runCommand('Sketcher_CreateChamfer',0)",
+        "after": [
+          "2 connected lines"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_Trimming",
+        "py": "sk.trim(geoId, App.Vector(x,y,0))",
+        "after": [
+          "overlapping geometry"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_Extend",
+        "py": "sk.extend(geoId, increment, endpoint)",
+        "after": [
+          "a line"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_Split",
+        "py": "sk.split(geoId, App.Vector(x,y,0))",
+        "after": [
+          "a curve"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_JoinCurves",
+        "py": "Gui.runCommand('Sketcher_JoinCurves',0)",
+        "after": [
+          "2 endpoint-coincident curves"
+        ],
+        "next": [],
+        "note": "Merges into one B-spline."
+      },
+      {
+        "id": "Sketcher_Offset",
+        "py": "Gui.runCommand('Sketcher_Offset',0)",
+        "after": [
+          "selected geometry"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_Symmetry",
+        "py": "Gui.runCommand('Sketcher_Symmetry',0)",
+        "after": [
+          "geometry + a line/point"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_RectangularArray",
+        "py": "sk.addRectangularArray(geoIdList, App.Vector(dx,dy,0), True, cols, rows, True)",
+        "after": [
+          "geometry"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ToggleConstruction",
+        "py": "sk.toggleConstruction(geoId)",
+        "after": [
+          "geometry"
+        ],
+        "next": [],
+        "note": "Construction geometry is not exported to Pad/Pocket - use it for centrelines, bolt circles, symmetry axes."
+      },
+      {
+        "id": "Sketcher_Projection",
+        "py": "sk.addExternal(obj.Name, 'Edge3')",
+        "after": [
+          "sketch attached near existing geometry"
+        ],
+        "next": [
+          "Sketcher_ConstrainCoincident"
+        ],
+        "note": "External geometry gets NEGATIVE indices starting at -3 (-1 and -2 are the sketch axes). Fragile under topological renaming."
+      },
+      {
+        "id": "Sketcher_CarbonCopy",
+        "py": "sk.carbonCopy(other_sketch.Name)",
+        "after": [
+          "another sketch"
+        ],
+        "next": [],
+        "note": "Copies geometry AND constraints from another sketch."
+      },
+      {
+        "id": "Sketcher_MergeSketches",
+        "py": "Gui.runCommand('Sketcher_MergeSketches',0)",
+        "after": [
+          "2 sketches selected"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_MapSketch",
+        "py": "sk.AttachmentSupport = [(obj,'Face3')]; sk.MapMode = 'FlatFace'",
+        "after": [
+          "a sketch + a face"
+        ],
+        "next": [
+          "PartDesign_Pad"
+        ],
+        "note": "MapMode values: Deactivated, FlatFace, ObjectXY, ObjectXZ, ObjectYZ, TangentPlane, NormalToEdge, Concentric, ThreePointsPlane."
+      },
+      {
+        "id": "Sketcher_ReorientSketch",
+        "py": "sk.Placement = App.Placement(App.Vector(0,0,0), App.Rotation(App.Vector(1,0,0), 90))",
+        "after": [
+          "a detached sketch"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ValidateSketch",
+        "py": "print(sk.solve(), sk.FullyConstrained, sk.Shape.isClosed() if sk.Shape.Wires else None)",
+        "after": [
+          "a sketch"
+        ],
+        "next": [
+          "PartDesign_Pad"
+        ],
+        "note": "ALWAYS run before padding. solve()==0 means solved. Also check sk.OpenVertices == [] for a closed profile."
+      },
+      {
+        "id": "Sketcher_DeleteAllGeometry",
+        "py": "sk.deleteAllGeometry()",
+        "after": [
+          "a sketch"
+        ],
+        "next": []
+      }
     ],
-    "next": [
-     "Sketcher_CreateRectangle",
-     "PartDesign_Pad",
-     "PartDesign_Revolution"
+    "Sketcher_constraints": [
+      {
+        "id": "__how__",
+        "py": "sk.addConstraint(Sketcher.Constraint('Type', args...))  # returns constraint index",
+        "after": [],
+        "next": [],
+        "note": "PointPos: 1=start 2=end 3=centre. Axis refs: geoId -1 = X axis, -2 = Y axis; the origin point is (-1, 1). Add geometric constraints BEFORE dimensional ones - the solver converges far better."
+      },
+      {
+        "id": "Sketcher_ConstrainCoincident",
+        "py": "sk.addConstraint(Sketcher.Constraint('Coincident', g1, 2, g2, 1))",
+        "after": [
+          "2 points"
+        ],
+        "next": [
+          "Sketcher_ConstrainDistance"
+        ],
+        "note": "The workhorse. Chain endpoints to close a profile. Coincident to (-1,1) pins geometry to the origin."
+      },
+      {
+        "id": "Sketcher_ConstrainHorizontal",
+        "py": "sk.addConstraint(Sketcher.Constraint('Horizontal', g1))",
+        "after": [
+          "a line"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainVertical",
+        "py": "sk.addConstraint(Sketcher.Constraint('Vertical', g1))",
+        "after": [
+          "a line"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainParallel",
+        "py": "sk.addConstraint(Sketcher.Constraint('Parallel', g1, g2))",
+        "after": [
+          "2 lines"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainPerpendicular",
+        "py": "sk.addConstraint(Sketcher.Constraint('Perpendicular', g1, g2))",
+        "after": [
+          "2 lines"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainTangent",
+        "py": "sk.addConstraint(Sketcher.Constraint('Tangent', g1, 2, g2, 1))",
+        "after": [
+          "line+arc or arc+arc"
+        ],
+        "next": [],
+        "note": "Endpoint-to-endpoint tangency (4 args) also enforces coincidence - do not add a separate Coincident or you get a redundancy."
+      },
+      {
+        "id": "Sketcher_ConstrainEqual",
+        "py": "sk.addConstraint(Sketcher.Constraint('Equal', g1, g2))",
+        "after": [
+          "2 same-type curves"
+        ],
+        "next": [],
+        "note": "Cheapest way to cut the DOF count on symmetric shapes."
+      },
+      {
+        "id": "Sketcher_ConstrainSymmetric",
+        "py": "sk.addConstraint(Sketcher.Constraint('Symmetric', g1, 1, g2, 2, -2))",
+        "after": [
+          "2 points + an axis/line"
+        ],
+        "next": [],
+        "note": "Symmetric about the Y axis here. Better than two mirrored dimensions."
+      },
+      {
+        "id": "Sketcher_ConstrainPointOnObject",
+        "py": "sk.addConstraint(Sketcher.Constraint('PointOnObject', g1, 1, g2))",
+        "after": [
+          "a point + a curve"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainBlock",
+        "py": "sk.addConstraint(Sketcher.Constraint('Block', g1))",
+        "after": [
+          "a curve"
+        ],
+        "next": [],
+        "note": "Freezes one element. Escape hatch for hard-to-constrain splines."
+      },
+      {
+        "id": "Sketcher_ConstrainLock",
+        "py": "Gui.runCommand('Sketcher_ConstrainLock',0)",
+        "after": [
+          "a point"
+        ],
+        "next": [],
+        "note": "Adds DistanceX + DistanceY. Convenient but over-constrains easily - prefer explicit constraints."
+      },
+      {
+        "id": "Sketcher_ConstrainDistance",
+        "py": "sk.addConstraint(Sketcher.Constraint('Distance', g1, 30))",
+        "after": [
+          "a line, or 2 points"
+        ],
+        "next": [
+          "Sketcher_ValidateSketch"
+        ],
+        "note": "Forms: (g1, len) line length; (g1,p1,g2,p2,len) point-to-point; (g1,p1,g2,len) point-to-line."
+      },
+      {
+        "id": "Sketcher_ConstrainDistanceX",
+        "py": "sk.addConstraint(Sketcher.Constraint('DistanceX', g1, 1, g2, 1, 20))",
+        "after": [
+          "points"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainDistanceY",
+        "py": "sk.addConstraint(Sketcher.Constraint('DistanceY', g1, 1, g2, 1, 20))",
+        "after": [
+          "points"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainRadius",
+        "py": "sk.addConstraint(Sketcher.Constraint('Radius', g1, 5))",
+        "after": [
+          "a circle/arc"
+        ],
+        "next": []
+      },
+      {
+        "id": "Sketcher_ConstrainDiameter",
+        "py": "sk.addConstraint(Sketcher.Constraint('Diameter', g1, 10))",
+        "after": [
+          "a circle"
+        ],
+        "next": [],
+        "note": "Use Diameter for holes - it matches how the part is manufactured and inspected."
+      },
+      {
+        "id": "Sketcher_ConstrainAngle",
+        "py": "sk.addConstraint(Sketcher.Constraint('Angle', g1, 2, g2, 1, 0.785))",
+        "after": [
+          "2 lines"
+        ],
+        "next": [],
+        "note": "RADIANS."
+      },
+      {
+        "id": "Sketcher_ConstrainSnellsLaw",
+        "py": "sk.addConstraint(Sketcher.Constraint('SnellsLaw', ...))",
+        "after": [
+          "2 rays + interface"
+        ],
+        "next": [],
+        "note": "Optics only."
+      },
+      {
+        "id": "Sketcher_ToggleDrivingConstraint",
+        "py": "sk.setDriving(constraintIndex, False)",
+        "after": [
+          "a dimensional constraint"
+        ],
+        "next": [],
+        "note": "Non-driving = a measurement readout instead of a rule. Useful for reporting a derived length."
+      },
+      {
+        "id": "Sketcher_ChangeDimensionConstraint",
+        "py": "sk.setDatum(constraintIndex, App.Units.Quantity('25 mm'))",
+        "after": [
+          "a dimensional constraint"
+        ],
+        "next": [
+          "Std_Refresh"
+        ],
+        "note": "THE way to parametrically drive a model. Name the constraint (sk.renameConstraint(i,'width')) then sk.setDatum('width', 25)."
+      },
+      {
+        "id": "Sketcher_SelectElementsWithDoFs",
+        "py": "print(sk.FullyConstrained, sk.solve())",
+        "after": [
+          "a sketch"
+        ],
+        "next": [],
+        "note": "Diagnose under-constraint. Also: sk.ConflictingConstraints, sk.RedundantConstraints, sk.PartiallyRedundantConstraints, sk.MalformedConstraints - all should be empty lists."
+      },
+      {
+        "id": "Sketcher_DeleteAllConstraints",
+        "py": "sk.delConstraint(i)  # or sk.deleteAllConstraints()",
+        "after": [
+          "constraints"
+        ],
+        "next": [],
+        "note": "Deleting shifts all higher indices down. Delete in descending order."
+      }
     ],
-    "note": "Origin planes: doc.XY_Plane / XZ_Plane / YZ_Plane exist inside every body's Origin. MapMode 'FlatFace' on a plane/face, 'ObjectXY' on a datum."
-   },
-   {
-    "id": "PartDesign_Pad",
-    "py": "pad = body.newObject('PartDesign::Pad','Pad'); pad.Profile = sk; pad.Length = 10; pad.Midplane = False; pad.Reversed = False",
-    "after": [
-     "closed sketch"
+    "Part": [
+      {
+        "id": "Part_Box",
+        "py": "b = doc.addObject('Part::Box','Box'); b.Length=10; b.Width=20; b.Height=5",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Part_Cut",
+          "Part_Fillet",
+          "Std_Placement"
+        ],
+        "note": "Non-parametric-history CSG. Faster than PartDesign when you just need a shape; no feature tree to maintain."
+      },
+      {
+        "id": "Part_Primitives",
+        "py": "doc.addObject('Part::Cylinder','Cyl').Radius = 5",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Part_Boolean"
+        ],
+        "note": "Types: Part::Box, Cylinder, Sphere, Cone, Torus, Prism, Wedge, Helix, Spiral, Ellipsoid, Plane, Vertex, Line, RegularPolygon."
+      },
+      {
+        "id": "Part_Cut",
+        "py": "c = doc.addObject('Part::Cut','Cut'); c.Base = a; c.Tool = b",
+        "after": [
+          "2 solids"
+        ],
+        "next": [
+          "Part_RefineShape",
+          "Part_Fillet"
+        ],
+        "note": "Base minus Tool. Both inputs get hidden and become children."
+      },
+      {
+        "id": "Part_Fuse",
+        "py": "f = doc.addObject('Part::MultiFuse','Fusion'); f.Shapes = [a,b,c]",
+        "after": [
+          "2+ solids"
+        ],
+        "next": [
+          "Part_RefineShape"
+        ],
+        "note": "MultiFuse takes a list; Part::Fuse takes Base/Tool. Prefer MultiFuse."
+      },
+      {
+        "id": "Part_Common",
+        "py": "c = doc.addObject('Part::MultiCommon','Common'); c.Shapes = [a,b]",
+        "after": [
+          "2+ solids"
+        ],
+        "next": []
+      },
+      {
+        "id": "Part_Boolean",
+        "py": "result = a.Shape.cut(b.Shape)  # then Part.show(result)",
+        "after": [
+          "2 shapes"
+        ],
+        "next": [],
+        "note": "Direct TopoShape ops (cut/fuse/common/section) skip the document entirely - fastest path for throwaway geometry. Part.show(shape,'Name') puts it in the document."
+      },
+      {
+        "id": "Part_Extrude",
+        "py": "e = doc.addObject('Part::Extrusion','Extrude'); e.Base = sk; e.DirMode='Normal'; e.LengthFwd=10; e.Solid=True",
+        "after": [
+          "a sketch/wire/face"
+        ],
+        "next": [
+          "Part_Fuse"
+        ],
+        "note": "Set Solid=True or you get a hollow shell."
+      },
+      {
+        "id": "Part_Revolve",
+        "py": "r = doc.addObject('Part::Revolution','Revolve'); r.Source=sk; r.Axis=(0,0,1); r.Angle=360; r.Solid=True",
+        "after": [
+          "a profile"
+        ],
+        "next": []
+      },
+      {
+        "id": "Part_Loft",
+        "py": "l = doc.addObject('Part::Loft','Loft'); l.Sections=[sk1,sk2]; l.Solid=True; l.Ruled=False",
+        "after": [
+          "2+ profiles"
+        ],
+        "next": []
+      },
+      {
+        "id": "Part_Sweep",
+        "py": "s = doc.addObject('Part::Sweep','Sweep'); s.Sections=[profile]; s.Spine=(path,['Edge1']); s.Solid=True; s.Frenet=True",
+        "after": [
+          "profile + path"
+        ],
+        "next": []
+      },
+      {
+        "id": "Part_Fillet",
+        "py": "f = doc.addObject('Part::Fillet','Fillet'); f.Base = box; f.Edges = [(1, 2.0, 2.0), (2, 2.0, 2.0)]",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "Edges is a list of (1-based edge index, start radius, end radius)."
+      },
+      {
+        "id": "Part_Chamfer",
+        "py": "c = doc.addObject('Part::Chamfer','Chamfer'); c.Base = box; c.Edges = [(1, 1.0, 1.0)]",
+        "after": [
+          "a solid"
+        ],
+        "next": []
+      },
+      {
+        "id": "Part_Mirror",
+        "py": "m = doc.addObject('Part::Mirroring','Mirror'); m.Source=obj; m.Base=App.Vector(0,0,0); m.Normal=App.Vector(1,0,0)",
+        "after": [
+          "a shape"
+        ],
+        "next": [
+          "Part_Fuse"
+        ]
+      },
+      {
+        "id": "Part_Offset",
+        "py": "o = doc.addObject('Part::Offset','Offset'); o.Source=obj; o.Value=2; o.Mode=0; o.Join=0",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "Join: 0=Arc 1=Tangent 2=Intersection. Part_Offset2D for planar wires."
+      },
+      {
+        "id": "Part_Thickness",
+        "py": "t = doc.addObject('Part::Thickness','Thickness'); t.Faces=(box,['Face6']); t.Value=-2",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "Negative value = inward."
+      },
+      {
+        "id": "Part_Scale",
+        "py": "m = App.Matrix(); m.scale(2,2,2); newshape = obj.Shape.transformGeometry(m)",
+        "after": [
+          "a shape"
+        ],
+        "next": [],
+        "note": "transformGeometry is the only true non-uniform scale; Placement cannot scale."
+      },
+      {
+        "id": "Part_Section",
+        "py": "s = doc.addObject('Part::Section','Section'); s.Base=a; s.Tool=plane",
+        "after": [
+          "solid + plane"
+        ],
+        "next": [
+          "Draft_Shape2DView"
+        ]
+      },
+      {
+        "id": "Part_CrossSections",
+        "py": "wires = obj.Shape.slice(App.Vector(0,0,1), z)",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "obj.Shape.slices(dir, [z1,z2,...]) for a whole stack - the basis of any slicer."
+      },
+      {
+        "id": "Part_SectionCut",
+        "py": "Gui.runCommand('Part_SectionCut',0)",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "View-only cutaway. Does not modify geometry."
+      },
+      {
+        "id": "Part_RuledSurface",
+        "py": "doc.addObject('Part::RuledSurface','Ruled')",
+        "after": [
+          "2 edges/wires"
+        ],
+        "next": []
+      },
+      {
+        "id": "Part_MakeFace",
+        "py": "face = Part.Face(Part.Wire(edges))",
+        "after": [
+          "a closed wire"
+        ],
+        "next": [
+          "Part_Extrude"
+        ]
+      },
+      {
+        "id": "Part_MakeSolid",
+        "py": "solid = Part.Solid(Part.Shell(faces))",
+        "after": [
+          "a closed shell"
+        ],
+        "next": [],
+        "note": "Check shell.isClosed() first or the solid is invalid."
+      },
+      {
+        "id": "Part_RefineShape",
+        "py": "newshape = obj.Shape.removeSplitter(); Part.show(newshape)",
+        "after": [
+          "a boolean result"
+        ],
+        "next": [],
+        "note": "Removes the co-planar seam faces booleans leave behind. Do this before exporting or filleting - it usually fixes 'fillet failed'."
+      },
+      {
+        "id": "Part_CheckGeometry",
+        "py": "print(obj.Shape.isValid(), obj.Shape.ShapeType, len(obj.Shape.Solids)); obj.Shape.check(True)",
+        "after": [
+          "a shape"
+        ],
+        "next": [
+          "Part_RefineShape"
+        ],
+        "note": "First thing to run when a downstream operation fails."
+      },
+      {
+        "id": "Part_Defeaturing",
+        "py": "Gui.runCommand('Part_Defeaturing',0)",
+        "after": [
+          "imported solid"
+        ],
+        "next": [],
+        "note": "Removes selected faces (holes, fillets) from a dumb import."
+      },
+      {
+        "id": "Part_ReverseShape",
+        "py": "obj.Shape.reverse()",
+        "after": [
+          "a shape"
+        ],
+        "next": [],
+        "note": "Flips normals. Fixes inside-out imported meshes/shells."
+      },
+      {
+        "id": "Part_SimpleCopy",
+        "py": "newobj = doc.addObject('Part::Feature','Copy'); newobj.Shape = obj.Shape.copy()",
+        "after": [
+          "a shape"
+        ],
+        "next": [],
+        "note": "Breaks the parametric link - the way to freeze a result."
+      },
+      {
+        "id": "Part_ShapeFromMesh",
+        "py": "sh = Part.Shape(); sh.makeShapeFromMesh(mesh.Mesh.Topology, 0.1); Part.show(sh)",
+        "after": [
+          "a mesh"
+        ],
+        "next": [
+          "Part_MakeSolid",
+          "Part_RefineShape"
+        ],
+        "note": "STL to B-rep. Produces a faceted shell, not smooth surfaces. Follow with Part.Solid() then refine."
+      },
+      {
+        "id": "Part_Builder",
+        "py": "Gui.runCommand('Part_Builder',0)",
+        "after": [
+          "vertices/edges/faces"
+        ],
+        "next": [],
+        "note": "Assemble shapes bottom-up from selected sub-elements."
+      },
+      {
+        "id": "Part_Import",
+        "py": "import Import; Import.insert('/path/f.step', doc.Name)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Part_RefineShape",
+          "PartDesign_ShapeBinder"
+        ],
+        "note": "STEP/IGES/BREP. Import.export([obj], '/path/out.step')."
+      },
+      {
+        "id": "Part_JoinConnect",
+        "py": "doc.addObject('Part::Connect','Connect').Objects = [a,b]",
+        "after": [
+          "2 shells/solids"
+        ],
+        "next": [],
+        "note": "Part::JoinConnect / JoinEmbed / JoinCutout - for joining pipes and sheet-like bodies."
+      },
+      {
+        "id": "Part_BooleanFragments",
+        "py": "import BOPTools.SplitFeatures; BOPTools.SplitFeatures.makeBooleanFragments(name='BF')",
+        "after": [
+          "2+ shapes"
+        ],
+        "next": [],
+        "note": "Splits everything at every intersection. Also makeSlice, makeXOR."
+      },
+      {
+        "id": "Part_Measure",
+        "py": "d = obj.Shape.distToShape(other.Shape)[0]; obj.Shape.Volume; obj.Shape.Area; obj.Shape.BoundBox; obj.Shape.CenterOfMass",
+        "after": [
+          "shapes"
+        ],
+        "next": [],
+        "note": "Everything the Measure workbench does is available directly on Shape. Also Shape.getMomentOfInertia / .Inertia via Shape.MatrixOfInertia."
+      }
     ],
-    "next": [
-     "PartDesign_NewSketch",
-     "PartDesign_Pocket",
-     "PartDesign_Fillet",
-     "PartDesign_Hole"
+    "Draft": [
+      {
+        "id": "Draft_SelectPlane",
+        "py": "import WorkingPlane; WorkingPlane.get_working_plane().align_to_point_and_axis(App.Vector(0,0,0), App.Vector(0,0,1), 0)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Draft_Line",
+          "Draft_Rectangle"
+        ],
+        "note": "Do this FIRST. Every Draft tool draws on the working plane; wrong plane is the #1 Draft failure."
+      },
+      {
+        "id": "Draft_Line",
+        "py": "Draft.make_line(App.Vector(0,0,0), App.Vector(10,0,0))",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": [
+          "Draft_Upgrade",
+          "Draft_Dimension"
+        ]
+      },
+      {
+        "id": "Draft_Wire",
+        "py": "Draft.make_wire([p1,p2,p3], closed=True, face=True)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": [
+          "Part_Extrude",
+          "Draft_Upgrade"
+        ],
+        "note": "closed=True + face=True gives an extrudable face in one call - the quickest 2D-to-3D route in all of FreeCAD."
+      },
+      {
+        "id": "Draft_Rectangle",
+        "py": "Draft.make_rectangle(length=10, height=5, placement=None, face=True)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": [
+          "Part_Extrude"
+        ]
+      },
+      {
+        "id": "Draft_Circle",
+        "py": "Draft.make_circle(radius=5, face=True)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": [
+          "Draft_OrthoArray"
+        ]
+      },
+      {
+        "id": "Draft_Arc",
+        "py": "Draft.make_circle(radius=5, startangle=0, endangle=90)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": [],
+        "note": "An arc is a Draft circle with start/end angles. Draft_Arc_3Points: Draft.make_arc_3points([p1,p2,p3])."
+      },
+      {
+        "id": "Draft_Ellipse",
+        "py": "Draft.make_ellipse(10, 5)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Polygon",
+        "py": "Draft.make_polygon(6, radius=10, inscribed=True, face=True)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": [
+          "Part_Extrude"
+        ]
+      },
+      {
+        "id": "Draft_BSpline",
+        "py": "Draft.make_bspline([p1,p2,p3], closed=False)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_BezCurve",
+        "py": "Draft.make_bezcurve([p1,p2,p3], degree=3)",
+        "after": [
+          "Draft_SelectPlane"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Point",
+        "py": "Draft.make_point(1,2,3)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Draft_PointArray"
+        ]
+      },
+      {
+        "id": "Draft_ShapeString",
+        "py": "Draft.make_shapestring('TEXT', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 10)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Part_Extrude",
+          "PartDesign_Pocket"
+        ],
+        "note": "The only way to get engravable/embossable text geometry. Needs a real font file path."
+      },
+      {
+        "id": "Draft_Text",
+        "py": "Draft.make_text(['line1','line2'], App.Vector(0,0,0))",
+        "after": [
+          "Std_New"
+        ],
+        "next": [],
+        "note": "Annotation only - no geometry."
+      },
+      {
+        "id": "Draft_Dimension",
+        "py": "Draft.make_dimension(p1, p2, App.Vector(0,-5,0))",
+        "after": [
+          "geometry"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Label",
+        "py": "Draft.make_label(target_point=p, placement=pl)",
+        "after": [
+          "geometry"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Move",
+        "py": "Draft.move([obj], App.Vector(10,0,0), copy=False)",
+        "after": [
+          "objects"
+        ],
+        "next": [],
+        "note": "copy=True duplicates. Works on any object, not just Draft ones."
+      },
+      {
+        "id": "Draft_Rotate",
+        "py": "Draft.rotate([obj], 45, center=App.Vector(0,0,0), axis=App.Vector(0,0,1), copy=False)",
+        "after": [
+          "objects"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Scale",
+        "py": "Draft.scale([obj], App.Vector(2,2,2), center=App.Vector(0,0,0), copy=False)",
+        "after": [
+          "objects"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Mirror",
+        "py": "Draft.mirror([obj], p1, p2)",
+        "after": [
+          "objects"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Offset",
+        "py": "Draft.offset(obj, App.Vector(1,0,0), copy=True)",
+        "after": [
+          "a wire"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Trimex",
+        "py": "Gui.runCommand('Draft_Trimex',0)",
+        "after": [
+          "a wire"
+        ],
+        "next": [],
+        "note": "Trim/extend/extrude in one tool."
+      },
+      {
+        "id": "Draft_Join",
+        "py": "Draft.join_wires([w1, w2])",
+        "after": [
+          "2 wires"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Split",
+        "py": "Draft.split_wire(wire, edge_index)",
+        "after": [
+          "a wire"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Upgrade",
+        "py": "Draft.upgrade([obj], delete=True)",
+        "after": [
+          "edges/wires/faces"
+        ],
+        "next": [
+          "Part_Extrude"
+        ],
+        "note": "Edges to wire, closed wire to face, faces to shell to solid. Run it repeatedly; it climbs one level each time. Draft_Downgrade goes the other way."
+      },
+      {
+        "id": "Draft_Draft2Sketch",
+        "py": "Draft.draft_to_sketch([obj])",
+        "after": [
+          "Draft geometry"
+        ],
+        "next": [
+          "PartDesign_Pad"
+        ],
+        "note": "The bridge from Draft into a constrainable PartDesign workflow."
+      },
+      {
+        "id": "Draft_OrthoArray",
+        "py": "Draft.make_ortho_array(obj, App.Vector(10,0,0), App.Vector(0,10,0), App.Vector(0,0,0), 5, 3, 1, use_link=True)",
+        "after": [
+          "an object"
+        ],
+        "next": [],
+        "note": "use_link=True keeps it lightweight (App::Link based)."
+      },
+      {
+        "id": "Draft_PolarArray",
+        "py": "Draft.make_polar_array(obj, number=6, angle=360, center=App.Vector(0,0,0))",
+        "after": [
+          "an object"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_CircularArray",
+        "py": "Draft.make_circular_array(obj, r_distance=10, tan_distance=10, number=3, symmetry=1)",
+        "after": [
+          "an object"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_PathArray",
+        "py": "Draft.make_path_array(obj, path, count=10, align=True)",
+        "after": [
+          "object + path wire"
+        ],
+        "next": [],
+        "note": "Chain links, fence posts, anything following a curve."
+      },
+      {
+        "id": "Draft_PointArray",
+        "py": "Draft.make_point_array(obj, point_object)",
+        "after": [
+          "object + point set"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Clone",
+        "py": "Draft.make_clone(obj)",
+        "after": [
+          "an object"
+        ],
+        "next": [],
+        "note": "Parametric copy that tracks the original and can be scaled."
+      },
+      {
+        "id": "Draft_Shape2DView",
+        "py": "Draft.make_shape2dview(obj, App.Vector(0,0,1))",
+        "after": [
+          "a 3D shape"
+        ],
+        "next": [
+          "TechDraw_View",
+          "Draft_Dimension"
+        ],
+        "note": "Flattens 3D to 2D lines - the route from a model to a DXF."
+      },
+      {
+        "id": "Draft_Facebinder",
+        "py": "Draft.make_facebinder(selection)",
+        "after": [
+          "selected faces"
+        ],
+        "next": [
+          "Part_Extrude"
+        ]
+      },
+      {
+        "id": "Draft_Layer",
+        "py": "Draft.make_layer('Walls', line_color=(1.0,0.0,0.0))",
+        "after": [
+          "Std_New"
+        ],
+        "next": [],
+        "note": "Layers map to DXF/DWG layers on export."
+      },
+      {
+        "id": "Draft_Fillet",
+        "py": "Draft.make_fillet([edge1, edge2], radius=2)",
+        "after": [
+          "2 Draft lines"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Hatch",
+        "py": "Gui.runCommand('Draft_Hatch',0)",
+        "after": [
+          "a face"
+        ],
+        "next": []
+      },
+      {
+        "id": "Draft_Snap_Lock",
+        "py": "Gui.runCommand('Draft_Snap_Lock',0)",
+        "after": [],
+        "next": [],
+        "note": "GUI-only. Irrelevant to scripted work; snapping does not apply to API calls."
+      }
     ],
-    "note": "Type: 0=Length 1=UpToLast 2=UpToFirst 3=UpToFace 4=TwoLengths. UpToFace needs pad.UpToFace=(obj,['Face3'])."
-   },
-   {
-    "id": "PartDesign_Pocket",
-    "py": "p = body.newObject('PartDesign::Pocket','Pocket'); p.Profile = sk; p.Length = 5",
-    "after": [
-     "PartDesign_Pad",
-     "sketch on the solid"
+    "Assembly": [
+      {
+        "id": "Assembly_CreateAssembly",
+        "py": "asm = doc.addObject('Assembly::AssemblyObject','Assembly')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Assembly_Insert",
+          "Assembly_InsertNewPart"
+        ],
+        "note": "An assembly is an App::Part subclass; it auto-creates a JointGroup, ViewGroup, etc. Nested assemblies are allowed."
+      },
+      {
+        "id": "Assembly_Insert",
+        "py": "lnk = asm.newObject('App::Link','Link'); lnk.LinkedObject = part_obj; lnk.Placement = App.Placement(...)",
+        "after": [
+          "Assembly_CreateAssembly",
+          "a part"
+        ],
+        "next": [
+          "Assembly_ToggleGrounded",
+          "Assembly_CreateJointFixed"
+        ],
+        "note": "Components are App::Links, never copies. Insert the same part N times = N links, one definition."
+      },
+      {
+        "id": "Assembly_InsertNewPart",
+        "py": "asm.newObject('App::Part','Part')",
+        "after": [
+          "Assembly_CreateAssembly"
+        ],
+        "next": [
+          "PartDesign_Body"
+        ],
+        "note": "Top-down design: model the part in place inside the assembly."
+      },
+      {
+        "id": "Assembly_InsertLink",
+        "py": "Gui.runCommand('Assembly_InsertLink',0)",
+        "after": [
+          "Assembly_CreateAssembly"
+        ],
+        "next": [],
+        "note": "Insert from another open document."
+      },
+      {
+        "id": "Assembly_ToggleGrounded",
+        "py": "g = asm.newObject('Assembly::JointGroup'...)  # GUI command is far simpler here",
+        "after": [
+          "Assembly_Insert"
+        ],
+        "next": [
+          "Assembly_CreateJointRevolute"
+        ],
+        "note": "GROUND EXACTLY ONE COMPONENT FIRST. An ungrounded assembly has no datum and the solver drifts. This is the single most common assembly mistake."
+      },
+      {
+        "id": "Assembly_CreateJointFixed",
+        "py": "jg = asm.Proxy.getJointGroup(asm) if hasattr(asm,'Proxy') else doc.getObject('Joints'); j = jg.newObject('App::FeaturePython','Fixed'); # then JointObject.Joint(j, 0)",
+        "after": [
+          "2 grounded/inserted components"
+        ],
+        "next": [
+          "Assembly_SolveAssembly"
+        ],
+        "note": "Scripting joints is awkward - the practical route is Gui.Selection.addSelection() on two features then Gui.runCommand('Assembly_CreateJointFixed',0). Once created, set j.JointType, j.Reference1, j.Reference2, j.Distance, j.Angle."
+      },
+      {
+        "id": "Assembly_CreateJointRevolute",
+        "py": "j.JointType = 'Revolute'",
+        "after": [
+          "2 components"
+        ],
+        "next": [
+          "Assembly_SolveAssembly"
+        ],
+        "note": "1 rotational DOF. Reference a circular edge or an LCS on each part; FreeCAD derives the axis."
+      },
+      {
+        "id": "Assembly_CreateJointSlider",
+        "py": "j.JointType = 'Slider'",
+        "after": [
+          "2 components"
+        ],
+        "next": [],
+        "note": "1 translational DOF."
+      },
+      {
+        "id": "Assembly_CreateJointCylindrical",
+        "py": "j.JointType = 'Cylindrical'",
+        "after": [
+          "2 components"
+        ],
+        "next": [],
+        "note": "Rotate + slide on the same axis. Shafts in bores."
+      },
+      {
+        "id": "Assembly_CreateJointBall",
+        "py": "j.JointType = 'Ball'",
+        "after": [
+          "2 components"
+        ],
+        "next": [],
+        "note": "3 rotational DOF."
+      },
+      {
+        "id": "Assembly_CreateJointDistance",
+        "py": "j.JointType = 'Distance'; j.Distance = 10",
+        "after": [
+          "2 components"
+        ],
+        "next": [],
+        "note": "Also does plane-plane offset, tangency, and point-on-line depending on what you reference."
+      },
+      {
+        "id": "Assembly_CreateJointParallel",
+        "py": "j.JointType = 'Parallel'",
+        "after": [
+          "2 components"
+        ],
+        "next": []
+      },
+      {
+        "id": "Assembly_CreateJointPerpendicular",
+        "py": "j.JointType = 'Perpendicular'",
+        "after": [
+          "2 components"
+        ],
+        "next": []
+      },
+      {
+        "id": "Assembly_CreateJointAngle",
+        "py": "j.JointType = 'Angle'; j.Angle = 45",
+        "after": [
+          "2 components"
+        ],
+        "next": []
+      },
+      {
+        "id": "Assembly_CreateJointGears",
+        "py": "j.JointType = 'Gears'; j.Radius1 = 10; j.Radius2 = 20",
+        "after": [
+          "2 revolute-jointed components"
+        ],
+        "next": [],
+        "note": "Motion coupling only, not geometry. Also 'RackPinion', 'Screw', 'Belt'."
+      },
+      {
+        "id": "Assembly_SolveAssembly",
+        "py": "asm.solve()",
+        "after": [
+          "joints"
+        ],
+        "next": [
+          "Assembly_CreateView",
+          "Assembly_CreateBom"
+        ],
+        "note": "asm.solve() returns 0 on success. asm.isPartConnected(obj), asm.undoSolve() also exist."
+      },
+      {
+        "id": "Assembly_SelectComponentsWithDoFs",
+        "py": "Gui.runCommand('Assembly_SelectComponentsWithDoFs',0)",
+        "after": [
+          "joints"
+        ],
+        "next": [],
+        "note": "Diagnostic: which parts are still free. Companions: SelectConflictingConstraints, SelectRedundantConstraints, SelectMalformedConstraints."
+      },
+      {
+        "id": "Assembly_CreateBom",
+        "py": "Gui.runCommand('Assembly_CreateBom',0)",
+        "after": [
+          "a populated assembly"
+        ],
+        "next": [
+          "TechDraw_SpreadsheetView"
+        ],
+        "note": "Bill of materials as a Spreadsheet - place it on a TechDraw page."
+      },
+      {
+        "id": "Assembly_CreateView",
+        "py": "Gui.runCommand('Assembly_CreateView',0)",
+        "after": [
+          "an assembly"
+        ],
+        "next": [],
+        "note": "Exploded views."
+      },
+      {
+        "id": "Assembly_CreateSimulation",
+        "py": "Gui.runCommand('Assembly_CreateSimulation',0)",
+        "after": [
+          "joints with motion"
+        ],
+        "next": [],
+        "note": "Kinematic motion study driven by the Ondsel solver."
+      },
+      {
+        "id": "Assembly_ExportASMT",
+        "py": "Gui.runCommand('Assembly_ExportASMT',0)",
+        "after": [
+          "an assembly"
+        ],
+        "next": [],
+        "note": "Debug dump of the solver model."
+      }
     ],
-    "next": [
-     "PartDesign_Fillet",
-     "PartDesign_LinearPattern"
+    "TechDraw": [
+      {
+        "id": "TechDraw_PageDefault",
+        "py": "page = doc.addObject('TechDraw::DrawPage','Page'); tmpl = doc.addObject('TechDraw::DrawSVGTemplate','Template'); tmpl.Template = App.getResourceDir()+'Mod/TechDraw/Templates/A3_Landscape_blank.svg'; page.Template = tmpl",
+        "after": [
+          "a model"
+        ],
+        "next": [
+          "TechDraw_View",
+          "TechDraw_ProjectionGroup"
+        ],
+        "note": "Root of every drawing. Templates live in <resource>/Mod/TechDraw/Templates/."
+      },
+      {
+        "id": "TechDraw_View",
+        "py": "v = doc.addObject('TechDraw::DrawViewPart','View'); v.Source = [body]; v.Direction = App.Vector(0,0,1); v.XDirection = App.Vector(1,0,0); v.Scale = 1; page.addView(v); v.X = 100; v.Y = 150",
+        "after": [
+          "TechDraw_PageDefault"
+        ],
+        "next": [
+          "TechDraw_LengthDimension",
+          "TechDraw_SectionView"
+        ],
+        "note": "Direction is the view direction. X/Y position on the page in mm. Set v.HardHidden/v.SmoothVisible for line style. Always doc.recompute() - views render lazily."
+      },
+      {
+        "id": "TechDraw_ProjectionGroup",
+        "py": "g = doc.addObject('TechDraw::DrawProjGroup','ProjGroup'); page.addView(g); g.Source=[body]; g.ProjectionType='Third Angle'; g.addProjection('Front'); g.addProjection('Top'); g.addProjection('Right')",
+        "after": [
+          "TechDraw_PageDefault"
+        ],
+        "next": [
+          "TechDraw_LengthDimension"
+        ],
+        "note": "The right way to make a standard multi-view drawing. Anchor is 'Front'; the others align automatically."
+      },
+      {
+        "id": "TechDraw_SectionView",
+        "py": "s = doc.addObject('TechDraw::DrawViewSection','Section'); s.BaseView = v; s.SectionNormal = App.Vector(0,-1,0); s.SectionOrigin = App.Vector(0,0,0); page.addView(s)",
+        "after": [
+          "TechDraw_View"
+        ],
+        "next": [
+          "TechDraw_Hatch"
+        ],
+        "note": "TechDraw_ComplexSection for stepped/aligned sections through a sketch path."
+      },
+      {
+        "id": "TechDraw_DetailView",
+        "py": "d = doc.addObject('TechDraw::DrawViewDetail','Detail'); d.BaseView = v; d.AnchorPoint=App.Vector(10,10,0); d.Radius=5; d.Scale=4",
+        "after": [
+          "TechDraw_View"
+        ],
+        "next": []
+      },
+      {
+        "id": "TechDraw_BrokenView",
+        "py": "Gui.runCommand('TechDraw_BrokenView',0)",
+        "after": [
+          "TechDraw_View"
+        ],
+        "next": [],
+        "note": "Shorten long parts."
+      },
+      {
+        "id": "TechDraw_ActiveView",
+        "py": "Gui.runCommand('TechDraw_ActiveView',0)",
+        "after": [
+          "TechDraw_PageDefault"
+        ],
+        "next": [],
+        "note": "Snapshot of the current 3D viewport, including colours - the quick way to get an isometric picture onto a sheet."
+      },
+      {
+        "id": "TechDraw_LengthDimension",
+        "py": "dim = doc.addObject('TechDraw::DrawViewDimension','Dim'); dim.Type='Distance'; dim.References2D=[(v,'Edge0')]; page.addView(dim)",
+        "after": [
+          "TechDraw_View"
+        ],
+        "next": [
+          "TechDraw_Balloon"
+        ],
+        "note": "Type: Distance, DistanceX, DistanceY, Radius, Diameter, Angle, Angle3Pt, Area. TechDraw sub-element names are 0-INDEXED (Edge0), unlike the 3D model's 1-indexed names."
+      },
+      {
+        "id": "TechDraw_Dimension",
+        "py": "Gui.runCommand('TechDraw_Dimension',0)",
+        "after": [
+          "selected edges/vertices in a view"
+        ],
+        "next": [],
+        "note": "Smart dimension - infers the type from the selection. The one to use interactively."
+      },
+      {
+        "id": "TechDraw_RadiusDimension",
+        "py": "dim.Type = 'Radius'",
+        "after": [
+          "a circular edge"
+        ],
+        "next": []
+      },
+      {
+        "id": "TechDraw_DiameterDimension",
+        "py": "dim.Type = 'Diameter'",
+        "after": [
+          "a circular edge"
+        ],
+        "next": []
+      },
+      {
+        "id": "TechDraw_AngleDimension",
+        "py": "dim.Type = 'Angle'; dim.References2D = [(v,'Edge0'),(v,'Edge2')]",
+        "after": [
+          "2 edges"
+        ],
+        "next": []
+      },
+      {
+        "id": "TechDraw_Balloon",
+        "py": "b = doc.addObject('TechDraw::DrawViewBalloon','Balloon'); b.SourceView = v; b.Text='1'; page.addView(b)",
+        "after": [
+          "TechDraw_View"
+        ],
+        "next": [
+          "Assembly_CreateBom"
+        ],
+        "note": "Assembly item callouts."
+      },
+      {
+        "id": "TechDraw_LeaderLine",
+        "py": "Gui.runCommand('TechDraw_LeaderLine',0)",
+        "after": [
+          "TechDraw_View"
+        ],
+        "next": [
+          "TechDraw_RichTextAnnotation"
+        ]
+      },
+      {
+        "id": "TechDraw_Annotation",
+        "py": "a = doc.addObject('TechDraw::DrawViewAnnotation','Note'); a.Text=['NOTES:','1. Deburr all edges.']; page.addView(a)",
+        "after": [
+          "TechDraw_PageDefault"
+        ],
+        "next": []
+      },
+      {
+        "id": "TechDraw_Hatch",
+        "py": "Gui.runCommand('TechDraw_Hatch',0)",
+        "after": [
+          "a face in a view"
+        ],
+        "next": [],
+        "note": "TechDraw_GeometricHatch for standards-based patterns from a .pat file."
+      },
+      {
+        "id": "TechDraw_2PointCenterLine",
+        "py": "Gui.runCommand('TechDraw_FaceCenterLine',0)",
+        "after": [
+          "a view"
+        ],
+        "next": [],
+        "note": "Also TechDraw_2LineCenterLine, TechDraw_FaceCenterLine, TechDraw_CosmeticVertex, TechDraw_2PointCosmeticLine."
+      },
+      {
+        "id": "TechDraw_SurfaceFinishSymbols",
+        "py": "Gui.runCommand('TechDraw_SurfaceFinishSymbols',0)",
+        "after": [
+          "a view"
+        ],
+        "next": [],
+        "note": "Also TechDraw_WeldSymbol on a leader line."
+      },
+      {
+        "id": "TechDraw_SpreadsheetView",
+        "py": "sv = doc.addObject('TechDraw::DrawViewSpreadsheet','Sheet'); sv.Source = sheet; sv.CellStart='A1'; sv.CellEnd='C10'; page.addView(sv)",
+        "after": [
+          "a spreadsheet + a page"
+        ],
+        "next": [],
+        "note": "Puts a BOM or parts table on the drawing."
+      },
+      {
+        "id": "TechDraw_ExportPageSVG",
+        "py": "import TechDrawGui; TechDrawGui.exportPageAsSvg(page, '/path/out.svg')",
+        "after": [
+          "a finished page"
+        ],
+        "next": [],
+        "note": "exportPageAsDxf(page, path) for CAD interchange. PDF: use the GUI print dialog or FreeCADGui print-to-file."
+      },
+      {
+        "id": "TechDraw_RedrawPage",
+        "py": "page.KeepUpdated = True; doc.recompute()",
+        "after": [
+          "a page"
+        ],
+        "next": [],
+        "note": "Pages default to not auto-updating on big models. Set KeepUpdated when scripting or your views stay blank."
+      }
     ],
-    "note": "Subtractive. Same Type enum as Pad; Type=1 (ThroughAll) is the common one."
-   },
-   {
-    "id": "PartDesign_Revolution",
-    "py": "r = body.newObject('PartDesign::Revolution','Revolution'); r.Profile = sk; r.ReferenceAxis = (sk,['V_Axis']); r.Angle = 360",
-    "after": [
-     "closed sketch, axis not crossing profile"
+    "Spreadsheet": [
+      {
+        "id": "Spreadsheet_CreateSheet",
+        "py": "sheet = doc.addObject('Spreadsheet::Sheet','Spreadsheet')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Spreadsheet_SetAlias"
+        ],
+        "note": "The parameter table. Drive the whole model from here."
+      },
+      {
+        "id": "Spreadsheet_Set",
+        "py": "sheet.set('A1','width'); sheet.set('B1','50')",
+        "after": [
+          "Spreadsheet_CreateSheet"
+        ],
+        "next": [
+          "Spreadsheet_SetAlias"
+        ],
+        "note": "Values are always strings. Formulas start with '=': sheet.set('B3','=B1*2')."
+      },
+      {
+        "id": "Spreadsheet_SetAlias",
+        "py": "sheet.setAlias('B1','width'); doc.recompute()",
+        "after": [
+          "a cell with a value"
+        ],
+        "next": [
+          "Spreadsheet_UseInExpression"
+        ],
+        "note": "Aliases are what make a cell referenceable. Without one the cell is invisible to the model."
+      },
+      {
+        "id": "Spreadsheet_UseInExpression",
+        "py": "pad.setExpression('Length','Spreadsheet.width'); sk.setExpression('Constraints.hole_dia','Spreadsheet.dia')",
+        "after": [
+          "Spreadsheet_SetAlias"
+        ],
+        "next": [
+          "Std_Refresh"
+        ],
+        "note": "Reference named sketch constraints as Constraints.<name>. This is the whole point of parametric CAD - one table drives every dimension."
+      },
+      {
+        "id": "Spreadsheet_Get",
+        "py": "sheet.get('width')  # or sheet.getContents('B1')",
+        "after": [
+          "a sheet"
+        ],
+        "next": [],
+        "note": "get() returns the evaluated value, getContents() the raw string."
+      },
+      {
+        "id": "Spreadsheet_Units",
+        "py": "sheet.set('B1','50mm')",
+        "after": [
+          "a sheet"
+        ],
+        "next": [],
+        "note": "Cells carry units. A unitless cell driving a Length property works, but mixing units in a formula silently fails - keep the sheet consistent."
+      },
+      {
+        "id": "Spreadsheet_Import",
+        "py": "sheet.importFile('/path/data.csv')  # sheet.exportFile('/path/out.csv')",
+        "after": [
+          "a sheet"
+        ],
+        "next": []
+      },
+      {
+        "id": "Spreadsheet_SetStyle",
+        "py": "sheet.setStyle('A1:A5','bold'); sheet.setBackground('A1',(1.0,1.0,0.0,1.0)); sheet.setColumnWidth('A',120)",
+        "after": [
+          "a sheet"
+        ],
+        "next": []
+      }
     ],
-    "next": [
-     "PartDesign_Groove",
-     "PartDesign_Fillet"
+    "FEM": [
+      {
+        "id": "__how__",
+        "py": "import ObjectsFem, FemGui; analysis = ObjectsFem.makeAnalysis(doc,'Analysis')",
+        "after": [],
+        "next": [],
+        "note": "Every FEM object is created by an ObjectsFem.makeX(doc, name) factory, then added: analysis.addObject(obj). The order below IS the required order - skipping a step gives a silent empty result."
+      },
+      {
+        "id": "FEM_Analysis",
+        "py": "analysis = ObjectsFem.makeAnalysis(doc,'Analysis'); FemGui.setActiveAnalysis(analysis)",
+        "after": [
+          "a solid"
+        ],
+        "next": [
+          "FEM_SolverCalculiX",
+          "FEM_MaterialSolid"
+        ],
+        "note": "Container for the whole study. setActiveAnalysis is required before any GUI FEM command."
+      },
+      {
+        "id": "FEM_SolverCalculiX",
+        "py": "solver = ObjectsFem.makeSolverCalculiX(doc,'Solver'); analysis.addObject(solver); solver.AnalysisType='static'; solver.GeometricalNonlinearity='linear'",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [
+          "FEM_MaterialSolid"
+        ],
+        "note": "AnalysisType: static, frequency, thermomech, buckling, check. Alternatives: makeSolverElmer (multiphysics/EM/CFD), makeSolverZ88, makeSolverMystran."
+      },
+      {
+        "id": "FEM_MaterialSolid",
+        "py": "mat = ObjectsFem.makeMaterialSolid(doc,'Material'); analysis.addObject(mat); m = mat.Material; m['Name']='Steel'; m['YoungsModulus']='210000 MPa'; m['PoissonRatio']='0.30'; m['Density']='7900 kg/m^3'; mat.Material = m",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [
+          "FEM_ConstraintFixed"
+        ],
+        "note": "mat.Material is a dict that must be reassigned wholesale - editing in place does nothing. Values are unit strings. Leave References empty to apply to everything."
+      },
+      {
+        "id": "FEM_MaterialFluid",
+        "py": "ObjectsFem.makeMaterialFluid(doc,'FluidMaterial')",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [],
+        "note": "CFD only. Also makeMaterialMechanicalNonlinear (plasticity), makeMaterialReinforced (concrete)."
+      },
+      {
+        "id": "FEM_ConstraintFixed",
+        "py": "fix = ObjectsFem.makeConstraintFixed(doc,'Fixed'); analysis.addObject(fix); fix.References = [(body,'Face1')]",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [
+          "FEM_ConstraintForce"
+        ],
+        "note": "At least one fixed (or displacement) constraint is mandatory - without it the model is unrestrained and the solve diverges."
+      },
+      {
+        "id": "FEM_ConstraintDisplacement",
+        "py": "d = ObjectsFem.makeConstraintDisplacement(doc,'Disp'); d.References=[(body,'Face2')]; d.xFix=True; d.zFree=False; d.zDisplacement=-1",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [],
+        "note": "Prescribed motion, or partial restraint (symmetry planes)."
+      },
+      {
+        "id": "FEM_ConstraintForce",
+        "py": "f = ObjectsFem.makeConstraintForce(doc,'Force'); analysis.addObject(f); f.References=[(body,'Face2')]; f.Force='100 N'; f.Reversed=False",
+        "after": [
+          "FEM_ConstraintFixed"
+        ],
+        "next": [
+          "FEM_MeshGmshFromShape"
+        ],
+        "note": "Total force spread over the referenced faces, not per-face."
+      },
+      {
+        "id": "FEM_ConstraintPressure",
+        "py": "p = ObjectsFem.makeConstraintPressure(doc,'Pressure'); p.References=[(body,'Face3')]; p.Pressure='0.1 MPa'; p.Reversed=False",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": []
+      },
+      {
+        "id": "FEM_ConstraintSelfWeight",
+        "py": "ObjectsFem.makeConstraintSelfWeight(doc,'Gravity')",
+        "after": [
+          "FEM_MaterialSolid"
+        ],
+        "next": [],
+        "note": "Needs Density set on the material."
+      },
+      {
+        "id": "FEM_ConstraintCentrif",
+        "py": "ObjectsFem.makeConstraintCentrif(doc,'Centrif')",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [],
+        "note": "Rotating parts - flywheels, impellers."
+      },
+      {
+        "id": "FEM_ConstraintContact",
+        "py": "ObjectsFem.makeConstraintContact(doc,'Contact')",
+        "after": [
+          "2 touching solids"
+        ],
+        "next": [],
+        "note": "Expensive and fragile. Use makeConstraintTie for bonded (glued) interfaces instead - far more robust."
+      },
+      {
+        "id": "FEM_ConstraintTemperature",
+        "py": "t = ObjectsFem.makeConstraintTemperature(doc,'Temp'); t.References=[(body,'Face1')]; t.Temperature='373 K'",
+        "after": [
+          "thermomech solver"
+        ],
+        "next": [
+          "FEM_ConstraintHeatflux"
+        ],
+        "note": "Thermal chain: makeConstraintTemperature, makeConstraintHeatflux, makeConstraintBodyHeatSource, makeConstraintInitialTemperature."
+      },
+      {
+        "id": "FEM_ConstraintSpring",
+        "py": "ObjectsFem.makeConstraintSpring(doc,'Spring')",
+        "after": [
+          "FEM_Analysis"
+        ],
+        "next": [],
+        "note": "Elastic foundation. Also makeConstraintRigidBody, makeConstraintTransform (cylindrical/local coords), makeConstraintPlaneRotation, makeConstraintSectionPrint."
+      },
+      {
+        "id": "FEM_ElementGeometry2D",
+        "py": "ObjectsFem.makeElementGeometry2D(doc, 2.0, 'ShellThickness')",
+        "after": [
+          "a face/shell body"
+        ],
+        "next": [],
+        "note": "Shell thickness for 2D meshes. makeElementGeometry1D for beam cross-sections, makeElementRotation1D for beam orientation, makeElementFluid1D for pipe networks."
+      },
+      {
+        "id": "FEM_MeshGmshFromShape",
+        "py": "mesh = ObjectsFem.makeMeshGmsh(doc,'Mesh'); mesh.Shape = body; mesh.CharacteristicLengthMax='5 mm'; mesh.ElementOrder='2nd'; analysis.addObject(mesh); import femmesh.gmshtools as gt; gt.GmshTools(mesh).create_mesh()",
+        "after": [
+          "constraints defined"
+        ],
+        "next": [
+          "FEM_SolverRun"
+        ],
+        "note": "Requires gmsh on PATH. create_mesh() returns an error string ('' = success). ElementOrder '2nd' is almost always what you want for stress accuracy. Check mesh.FemMesh.NodeCount > 0 before solving."
+      },
+      {
+        "id": "FEM_MeshNetgenFromShape",
+        "py": "ObjectsFem.makeMeshNetgen(doc,'Mesh')",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "Built-in, no external binary. Less control than gmsh."
+      },
+      {
+        "id": "FEM_MeshRegion",
+        "py": "r = ObjectsFem.makeMeshRegion(doc, mesh, 1.0, 'Refinement'); r.References=[(body,'Face5')]",
+        "after": [
+          "FEM_MeshGmshFromShape"
+        ],
+        "next": [],
+        "note": "Local refinement at stress concentrations. Also makeMeshBoundaryLayer (CFD), makeMeshTransfiniteVolume (structured)."
+      },
+      {
+        "id": "FEM_MeshGroup",
+        "py": "ObjectsFem.makeMeshGroup(doc, mesh)",
+        "after": [
+          "a mesh"
+        ],
+        "next": [],
+        "note": "Named node/element sets exported to the solver deck."
+      },
+      {
+        "id": "FEM_SolverRun",
+        "py": "from femtools import ccxtools; fea = ccxtools.FemToolsCcx(analysis, solver); fea.update_objects(); fea.setup_working_dir(); fea.check_prerequisites(); fea.write_inp_file(); fea.ccx_run(); fea.load_results()",
+        "after": [
+          "mesh + material + constraints"
+        ],
+        "next": [
+          "FEM_PostPipelineFromResult"
+        ],
+        "note": "check_prerequisites() returns a message string - if non-empty, STOP and report it; it names exactly what is missing. This is the best diagnostic in the whole FEM module."
+      },
+      {
+        "id": "FEM_ResultShow",
+        "py": "res = [o for o in analysis.Group if o.isDerivedFrom('Fem::FemResultObject')][0]; print(max(res.vonMises), max(res.DisplacementLengths))",
+        "after": [
+          "FEM_SolverRun"
+        ],
+        "next": [
+          "FEM_PostPipelineFromResult"
+        ],
+        "note": "Result fields: vonMises, DisplacementVectors, DisplacementLengths, MaxShear, PrincipalMax/Med/Min, Temperature, ReinforcementRatio. Compare max(vonMises) to the material yield to answer 'will it hold'."
+      },
+      {
+        "id": "FEM_PostPipelineFromResult",
+        "py": "pipe = ObjectsFem.makePostVtkResult(doc, [res], 'Pipeline')",
+        "after": [
+          "FEM_ResultShow"
+        ],
+        "next": [
+          "FEM_PostFilterClipScalar"
+        ],
+        "note": "Post-processing pipeline; filters attach to it: makePostVtkFilterClipRegion, ClipScalar, CutFunction, Warp, Contours, makePostFilterGlyph."
+      },
+      {
+        "id": "FEM_PostLineplot",
+        "py": "ObjectsFem.makePostLineplot(doc,'Lineplot')",
+        "after": [
+          "FEM_PostPipelineFromResult"
+        ],
+        "next": [],
+        "note": "Data along a line. Also makePostHistogram, makePostTable for numeric extraction."
+      },
+      {
+        "id": "FEM_ResultsPurge",
+        "py": "Gui.runCommand('FEM_ResultsPurge',0)",
+        "after": [
+          "results"
+        ],
+        "next": [
+          "FEM_SolverRun"
+        ],
+        "note": "Clear before re-running or old results are silently kept."
+      },
+      {
+        "id": "FEM_Examples",
+        "py": "Gui.runCommand('FEM_Examples',0)",
+        "after": [],
+        "next": [],
+        "note": "Working reference models for every analysis type - the fastest way to learn a correct setup."
+      }
     ],
-    "note": "ReferenceAxis choices: (sk,['V_Axis']), (sk,['H_Axis']), (sk,['Axis0']) for a construction line, or a datum line."
-   },
-   {
-    "id": "PartDesign_Groove",
-    "py": "g = body.newObject('PartDesign::Groove','Groove'); g.Profile = sk; g.ReferenceAxis = (sk,['V_Axis']); g.Angle = 360",
-    "after": [
-     "PartDesign_Revolution"
+    "Mesh_and_IO": [
+      {
+        "id": "Mesh_Import",
+        "py": "import Mesh; Mesh.insert('/path/f.stl', doc.Name)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Mesh_Evaluate",
+          "Part_ShapeFromMesh"
+        ],
+        "note": "STL, OBJ, PLY, 3MF, AMF, OFF."
+      },
+      {
+        "id": "Mesh_Export",
+        "py": "Mesh.export([obj], '/path/out.stl')",
+        "after": [
+          "a solid or mesh"
+        ],
+        "next": [],
+        "note": "Works directly on a solid - it tessellates automatically. For print quality set the tessellation first via a Mesh_FromPartShape."
+      },
+      {
+        "id": "Mesh_FromPartShape",
+        "py": "m = doc.addObject('Mesh::Feature','Mesh'); m.Mesh = MeshPart.meshFromShape(Shape=body.Shape, LinearDeflection=0.1, AngularDeflection=0.5, Relative=False)",
+        "after": [
+          "a solid"
+        ],
+        "next": [
+          "Mesh_Export"
+        ],
+        "note": "import MeshPart. LinearDeflection controls print fidelity - 0.01-0.1 mm for FDM. This is the correct STL export path."
+      },
+      {
+        "id": "Mesh_Evaluate",
+        "py": "print(m.Mesh.isSolid(), m.Mesh.hasNonManifolds(), m.Mesh.hasSelfIntersections(), m.Mesh.CountFacets)",
+        "after": [
+          "a mesh"
+        ],
+        "next": [
+          "Mesh_Harmonize"
+        ],
+        "note": "Run before exporting for print. m.Mesh.removeNonManifolds(), .removeDuplicatedFacets(), .fixIndices(), .harmonizeNormals() are the repair calls."
+      },
+      {
+        "id": "Mesh_Decimate",
+        "py": "m.Mesh.decimate(0.1, 0.1)",
+        "after": [
+          "a dense mesh"
+        ],
+        "next": []
+      },
+      {
+        "id": "Mesh_Boolean",
+        "py": "result = m1.Mesh.unite(m2.Mesh)  # .intersect(), .difference()",
+        "after": [
+          "2 meshes"
+        ],
+        "next": [],
+        "note": "Mesh booleans are far more forgiving than B-rep booleans on messy scan data."
+      },
+      {
+        "id": "Import_STEP",
+        "py": "import Import; Import.insert('/path/f.step', doc.Name); Import.export([obj],'/path/out.step')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Part_RefineShape",
+          "PartDesign_ShapeBinder"
+        ],
+        "note": "STEP is the interchange format that preserves solids. Set import prefs via ParamGet('User parameter:BaseApp/Preferences/Mod/Import')."
+      },
+      {
+        "id": "Import_DXF",
+        "py": "import importDXF; importDXF.insert('/path/f.dxf', doc.Name); importDXF.export([obj],'/path/out.dxf')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Draft_Upgrade",
+          "Draft_Draft2Sketch"
+        ],
+        "note": "Imports as Draft objects. Upgrade then Draft2Sketch to make it parametric."
+      },
+      {
+        "id": "Import_SVG",
+        "py": "import importSVG; importSVG.insert('/path/f.svg', doc.Name)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Draft_Upgrade",
+          "Part_Extrude"
+        ],
+        "note": "Logo-to-3D pipeline: import SVG, Draft.upgrade to faces, Part::Extrusion."
+      },
+      {
+        "id": "Import_Image",
+        "py": "img = doc.addObject('Image::ImagePlane','Image'); img.ImageFile='/path/ref.png'; img.XSize=100; img.YSize=80",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "Sketcher_NewSketch"
+        ],
+        "note": "Trace-over reference in the 3D view."
+      },
+      {
+        "id": "Export_Everything",
+        "py": "obj.Shape.exportStep('/p.step'); obj.Shape.exportBrep('/p.brep'); obj.Shape.exportIges('/p.iges'); obj.Shape.exportStl('/p.stl')",
+        "after": [
+          "a shape"
+        ],
+        "next": [],
+        "note": "Shape-level exporters skip the document layer - the fastest programmatic export."
+      }
     ],
-    "next": [
-     "PartDesign_Fillet"
+    "Material_Measure_Misc": [
+      {
+        "id": "Material_Apply",
+        "py": "obj.ShapeMaterial = <material>  # GUI: Material workbench, or set ViewObject.ShapeAppearance",
+        "after": [
+          "a solid"
+        ],
+        "next": [
+          "FEM_MaterialSolid",
+          "Part_Measure"
+        ],
+        "note": "Assigning a material gives correct Density for mass calculations and drives FEM/BIM takeoffs."
+      },
+      {
+        "id": "Measure_Distance",
+        "py": "obj.Shape.distToShape(other.Shape)  # -> (dist, [(pt1,pt2)], [info])",
+        "after": [
+          "2 shapes"
+        ],
+        "next": []
+      },
+      {
+        "id": "Measure_Mass",
+        "py": "v = obj.Shape.Volume; mass = v * density_kg_per_mm3; c = obj.Shape.CenterOfMass",
+        "after": [
+          "a solid"
+        ],
+        "next": [],
+        "note": "Volume is mm^3. Steel ~7.9e-6 kg/mm^3. CenterOfMass and MatrixOfInertia answer most engineering questions without a workbench."
+      },
+      {
+        "id": "Measure_BoundingBox",
+        "py": "bb = obj.Shape.BoundBox; print(bb.XLength, bb.YLength, bb.ZLength)",
+        "after": [
+          "a shape"
+        ],
+        "next": [],
+        "note": "Instant 'will it fit in the printer' check."
+      },
+      {
+        "id": "Std_ViewFit",
+        "py": "Gui.SendMsgToActiveView('ViewFit'); Gui.activeDocument().activeView().viewAxonometric()",
+        "after": [
+          "a GUI session"
+        ],
+        "next": [
+          "Std_ViewScreenShot"
+        ],
+        "note": "Also viewFront/viewTop/viewRight/viewIsometric."
+      },
+      {
+        "id": "Std_ViewScreenShot",
+        "py": "Gui.activeDocument().activeView().saveImage('/path/shot.png', 1920, 1080, 'White')",
+        "after": [
+          "a GUI session"
+        ],
+        "next": [],
+        "note": "THE way for an AI to see its own work. Take a screenshot after every significant step and check it."
+      },
+      {
+        "id": "Std_Visibility",
+        "py": "obj.ViewObject.Visibility = False; obj.ViewObject.ShapeColor=(0.8,0.2,0.2); obj.ViewObject.Transparency=50",
+        "after": [
+          "an object"
+        ],
+        "next": []
+      },
+      {
+        "id": "Std_SelectionGet",
+        "py": "sel = Gui.Selection.getSelectionEx(); sub = sel[0].SubElementNames",
+        "after": [
+          "a GUI session"
+        ],
+        "next": [],
+        "note": "How to learn what the user is pointing at. getCompleteSelection() includes sub-elements across documents."
+      },
+      {
+        "id": "Std_DependencyGraph",
+        "py": "obj.OutList  # what it depends on;  obj.InList  # what depends on it",
+        "after": [
+          "objects"
+        ],
+        "next": [],
+        "note": "Traverse the model programmatically. doc.Objects, doc.getObject(name), doc.getObjectsByLabel(label)."
+      },
+      {
+        "id": "Std_Macro",
+        "py": "open('/home/user/.local/share/FreeCAD/Macro/x.FCMacro','w').write(code)",
+        "after": [],
+        "next": [],
+        "note": "Persisting generated scripts. Macro dir: App.getUserMacroDir(True)."
+      },
+      {
+        "id": "Std_Parameters",
+        "py": "p = App.ParamGet('User parameter:BaseApp/Preferences/Mod/Part'); p.SetFloat('MeshDeviation', 0.1)",
+        "after": [],
+        "next": [],
+        "note": "All settings are here. Read before writing; changes are immediate and persistent."
+      },
+      {
+        "id": "CAM_Job",
+        "py": "Gui.activateWorkbench('CAMWorkbench')  # then CAM_Job, CAM_Profile, CAM_Pocket, CAM_Drilling, CAM_PostProcess",
+        "after": [
+          "a finished solid"
+        ],
+        "next": [],
+        "note": "Chain: Job (pick model + stock + tool table) -> ToolBitLibrary -> operations (Profile/Pocket/Adaptive/Drilling/Surface) -> Simulator -> PostProcess to G-code."
+      },
+      {
+        "id": "BIM_Wall",
+        "py": "import Arch; Arch.makeWall(baseline, length=5000, width=200, height=3000)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [],
+        "note": "Arch/BIM chain: makeSite -> makeBuilding -> makeFloor -> makeWall/makeStructure -> makeWindow (needs a wall host) -> makeSectionPlane -> TechDraw. Arch.makeIfcProject for IFC export."
+      },
+      {
+        "id": "Surface_Filling",
+        "py": "doc.addObject('Surface::Filling','Surface')",
+        "after": [
+          "boundary edges"
+        ],
+        "next": [
+          "Part_MakeSolid"
+        ],
+        "note": "Surface workbench: Filling, GeomFillSurface, Sections, Curve on mesh, Blend curve. For organic shapes B-rep primitives cannot make."
+      },
+      {
+        "id": "Points_Import",
+        "py": "import Points; Points.insert('/path/cloud.asc', doc.Name)",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "ReverseEngineering_Approximate"
+        ],
+        "note": "Point clouds; ReverseEngineering workbench fits surfaces to them."
+      }
     ],
-    "note": "Subtractive revolve."
-   },
-   {
-    "id": "PartDesign_AdditiveLoft",
-    "py": "l = body.newObject('PartDesign::AdditiveLoft','Loft'); l.Profile = sk1; l.Sections = [sk2, sk3]; l.Ruled = False; l.Closed = False",
-    "after": [
-     "2+ sketches on different planes"
-    ],
-    "next": [
-     "PartDesign_Fillet"
-    ],
-    "note": "Section order matters; mismatched vertex counts produce twists."
-   },
-   {
-    "id": "PartDesign_SubtractiveLoft",
-    "py": "body.newObject('PartDesign::SubtractiveLoft','Loft')",
-    "after": [
-     "solid + 2 sketches"
-    ],
-    "next": []
-   },
-   {
-    "id": "PartDesign_AdditivePipe",
-    "py": "p = body.newObject('PartDesign::AdditivePipe','Pipe'); p.Profile = profile_sk; p.Spine = (path_sk, ['Edge1','Edge2']); p.Mode='Frenet'",
-    "after": [
-     "profile sketch + path sketch/edges"
-    ],
-    "next": [
-     "PartDesign_Fillet"
-    ],
-    "note": "Sweep. Spine is (object, [edge names]) - listing all edges of the path is required."
-   },
-   {
-    "id": "PartDesign_SubtractivePipe",
-    "py": "body.newObject('PartDesign::SubtractivePipe','Pipe')",
-    "after": [
-     "solid + profile + path"
-    ],
-    "next": []
-   },
-   {
-    "id": "PartDesign_AdditiveHelix",
-    "py": "h = body.newObject('PartDesign::AdditiveHelix','Helix'); h.Profile = sk; h.ReferenceAxis=(body.Origin.OriginFeatures[2],['']); h.Pitch=5; h.Height=50",
-    "after": [
-     "profile sketch"
-    ],
-    "next": [],
-    "note": "Threads, springs. Mode: 0=pitch-height, 1=pitch-turns, 2=height-turns."
-   },
-   {
-    "id": "PartDesign_SubtractiveHelix",
-    "py": "body.newObject('PartDesign::SubtractiveHelix','Helix')",
-    "after": [
-     "solid + profile"
-    ],
-    "next": [],
-    "note": "The clean way to cut a real thread."
-   },
-   {
-    "id": "PartDesign_Hole",
-    "py": "h = body.newObject('PartDesign::Hole','Hole'); h.Profile = sk; h.Threaded=False; h.HoleCutType='None'; h.Diameter=6; h.Depth=20; h.DepthType='Dimension'",
-    "after": [
-     "sketch of circles on a face"
-    ],
-    "next": [
-     "PartDesign_LinearPattern"
-    ],
-    "note": "Use this, not Pocket, for fasteners: ThreadType='ISOMetricProfile', ThreadSize='M6', HoleCutType='Countersink'/'Counterbore', Tapered, DrillPoint. The sketch circles' diameters are ignored - only their centres are used."
-   },
-   {
-    "id": "PartDesign_CompPrimitiveAdditive",
-    "py": "box = body.newObject('PartDesign::AdditiveBox','Box'); box.Length=10; box.Width=10; box.Height=10",
-    "after": [
-     "PartDesign_Body"
-    ],
-    "next": [
-     "PartDesign_Pocket",
-     "PartDesign_Fillet"
-    ],
-    "note": "Types: AdditiveBox, AdditiveCylinder, AdditiveSphere, AdditiveCone, AdditiveEllipsoid, AdditiveTorus, AdditivePrism, AdditiveWedge. Faster than sketch+pad for simple shapes; position via .AttachmentOffset."
-   },
-   {
-    "id": "PartDesign_CompPrimitiveSubtractive",
-    "py": "body.newObject('PartDesign::SubtractiveCylinder','Cyl')",
-    "after": [
-     "existing solid"
-    ],
-    "next": [],
-    "note": "Subtractive{Box,Cylinder,Sphere,Cone,Ellipsoid,Torus,Prism,Wedge}."
-   },
-   {
-    "id": "PartDesign_Fillet",
-    "py": "base = body.Tip; f = body.newObject('PartDesign::Fillet','Fillet'); f.Base = (base, ['Edge1','Edge2']); f.Radius = 2",
-    "after": [
-     "any solid feature"
-    ],
-    "next": [
-     "PartDesign_Chamfer",
-     "PartDesign_NewSketch"
-    ],
-    "note": "CAPTURE body.Tip BEFORE calling newObject - newObject makes the new feature the tip instantly, so f.Base=(body.Tip,...) self-references and the fillet silently does nothing (no error, volume unchanged). Same trap for Chamfer/Draft/Thickness. Select a Face to fillet all its edges. Fillet late - it is the most fragile feature under topological renaming."
-   },
-   {
-    "id": "PartDesign_Chamfer",
-    "py": "base = body.Tip; c = body.newObject('PartDesign::Chamfer','Chamfer'); c.Base = (base, ['Edge1']); c.Size = 1",
-    "after": [
-     "any solid feature"
-    ],
-    "next": [],
-    "note": "Same capture-the-tip-first rule as PartDesign_Fillet. ChamferType: 0=equal 1=two distances 2=distance+angle."
-   },
-   {
-    "id": "PartDesign_Draft",
-    "py": "base = body.Tip; d = body.newObject('PartDesign::Draft','Draft'); d.Base = (base, ['Face1']); d.Angle = 3; d.NeutralPlane = (base, ['Face6'])",
-    "after": [
-     "solid"
-    ],
-    "next": [
-     "PartDesign_Fillet"
-    ],
-    "note": "Same capture-the-tip-first rule as PartDesign_Fillet. Mould release angles. Apply before fillets."
-   },
-   {
-    "id": "PartDesign_Thickness",
-    "py": "base = body.Tip; t = body.newObject('PartDesign::Thickness','Thickness'); t.Base = (base, ['Face6']); t.Value = 2; t.Reversed = True",
-    "after": [
-     "solid"
-    ],
-    "next": [],
-    "note": "Same capture-the-tip-first rule as PartDesign_Fillet. The listed faces are the ones removed (the opening)."
-   },
-   {
-    "id": "PartDesign_LinearPattern",
-    "py": "lp = body.newObject('PartDesign::LinearPattern','LinearPattern'); lp.Transformed = [pocket]; lp.Direction=(sk,['H_Axis']); lp.Length=50; lp.Occurrences=5",
-    "after": [
-     "a feature to repeat"
-    ],
-    "next": [
-     "PartDesign_MultiTransform"
-    ],
-    "note": "Patterns features, not faces. Occurrences includes the original."
-   },
-   {
-    "id": "PartDesign_PolarPattern",
-    "py": "pp = body.newObject('PartDesign::PolarPattern','PolarPattern'); pp.Transformed=[hole]; pp.Axis=(body.Origin.OriginFeatures[2],['']); pp.Angle=360; pp.Occurrences=6",
-    "after": [
-     "a feature to repeat"
-    ],
-    "next": [],
-    "note": "Bolt circles. Angle=360 with n occurrences spaces them evenly (no duplicate at 360)."
-   },
-   {
-    "id": "PartDesign_Mirrored",
-    "py": "m = body.newObject('PartDesign::Mirrored','Mirrored'); m.Transformed=[pad]; m.MirrorPlane=(body.Origin.OriginFeatures[3],[''])",
-    "after": [
-     "a feature"
-    ],
-    "next": []
-   },
-   {
-    "id": "PartDesign_MultiTransform",
-    "py": "body.newObject('PartDesign::MultiTransform','MultiTransform')",
-    "after": [
-     "2+ transforms"
-    ],
-    "next": [],
-    "note": "Chains patterns (linear x polar) so they compound instead of stacking."
-   },
-   {
-    "id": "PartDesign_Scaled",
-    "py": "body.newObject('PartDesign::Scaled','Scaled')",
-    "after": [
-     "a feature"
-    ],
-    "next": [
-     "PartDesign_MultiTransform"
-    ],
-    "note": "Only usable inside a MultiTransform."
-   },
-   {
-    "id": "PartDesign_Plane",
-    "py": "pl = body.newObject('PartDesign::Plane','DatumPlane'); pl.AttachmentSupport=[(doc.XY_Plane,'')]; pl.MapMode='FlatFace'; pl.AttachmentOffset=App.Placement(App.Vector(0,0,25), App.Rotation())",
-    "after": [
-     "PartDesign_Body"
-    ],
-    "next": [
-     "PartDesign_NewSketch"
-    ],
-    "note": "THE fix for topological naming: sketch on a datum plane offset from an origin plane instead of on a model face."
-   },
-   {
-    "id": "PartDesign_Line",
-    "py": "body.newObject('PartDesign::Line','DatumLine')",
-    "after": [
-     "PartDesign_Body"
-    ],
-    "next": [
-     "PartDesign_Revolution",
-     "PartDesign_PolarPattern"
-    ],
-    "note": "Stable rotation axis."
-   },
-   {
-    "id": "PartDesign_Point",
-    "py": "body.newObject('PartDesign::Point','DatumPoint')",
-    "after": [
-     "PartDesign_Body"
-    ],
-    "next": [
-     "PartDesign_Plane"
+    "Parameters_VarSet": [
+      {
+        "id": "VarSet_Create",
+        "py": "vs = doc.addObject('App::VarSet', 'Vars')",
+        "after": [
+          "Std_New"
+        ],
+        "next": [
+          "VarSet_AddProperty"
+        ],
+        "note": "The one place to put parametric variables that drive dimensions. FreeCAD 1.0+. The OBJECT type is 'App::VarSet'. 'App::PropertyLength', 'App::PropertyLink' and friends are PROPERTY types - passing one to addObject fails with \"is not a document object type\"."
+      },
+      {
+        "id": "VarSet_AddProperty",
+        "py": "vs.addProperty('App::PropertyLength', 'Bore', 'Bearing', 'bore diameter'); vs.Bore = 10; doc.recompute()",
+        "after": [
+          "VarSet_Create"
+        ],
+        "next": [
+          "VarSet_UseInExpression"
+        ],
+        "note": "addProperty(type, name, group, doc). Property type here, object type in addObject. Use PropertyLength for anything in mm so units follow."
+      },
+      {
+        "id": "VarSet_UseInExpression",
+        "py": "pad.setExpression('Length', 'Vars.Bore'); sk.setExpression('Constraints.bore_dia', 'Vars.Bore'); doc.recompute()",
+        "after": [
+          "VarSet_AddProperty"
+        ],
+        "next": [],
+        "note": "How a parametric variable actually drives a dimension. This is the point of a VarSet: change vs.Bore, recompute, and every expression bound to it follows. Name the sketch constraint first, or there is nothing to bind to."
+      },
+      {
+        "id": "VarSet_Set",
+        "py": "vs.Bore = 25; doc.recompute()",
+        "after": [
+          "VarSet_UseInExpression"
+        ],
+        "next": [],
+        "note": "Drives every dependent feature. Prefer this over editing each feature."
+      }
     ]
-   },
-   {
-    "id": "PartDesign_CoordinateSystem",
-    "py": "body.newObject('PartDesign::CoordinateSystem','LCS')",
-    "after": [
-     "PartDesign_Body"
+  },
+  "flow_tree": {
+    "note": "Read '>' as 'is normally followed by'. Branches in [] are alternatives. This is the spine an agent should plan against.",
+    "root": "Std_New > { PartDesign | Part | Draft | Assembly | Spreadsheet }",
+    "mechanical_part": [
+      "Std_New > PartDesign_Body > PartDesign_NewSketch(on XY/XZ/YZ_Plane)",
+      "  > Sketcher geometry > Sketcher geometric constraints > Sketcher dimensional constraints > Sketcher_ValidateSketch",
+      "  > PartDesign_Pad [ | PartDesign_Revolution | PartDesign_AdditiveLoft | PartDesign_AdditivePipe | PartDesign_AdditiveHelix ]",
+      "  > PartDesign_NewSketch(on a face or a PartDesign_Plane) > PartDesign_Pocket [ | PartDesign_Hole | PartDesign_Groove ]",
+      "  > PartDesign_LinearPattern [ | PartDesign_PolarPattern | PartDesign_Mirrored ]",
+      "  > PartDesign_Fillet > PartDesign_Chamfer   (dress-up features LAST)",
+      "  > Std_Save > { TechDraw_PageDefault | Mesh_FromPartShape | Import_STEP export | Assembly_Insert }"
     ],
-    "next": [
-     "Assembly_CreateJointFixed"
+    "parametric_part": [
+      "Spreadsheet_CreateSheet > Spreadsheet_Set > Spreadsheet_SetAlias",
+      "  > (build the body as above, but) Sketcher_ChangeDimensionConstraint driven by Spreadsheet_UseInExpression",
+      "  > change one cell > Std_Refresh > whole model updates"
     ],
-    "note": "Local coordinate system - the cleanest joint target in Assembly."
-   },
-   {
-    "id": "PartDesign_ShapeBinder",
-    "py": "sb = body.newObject('PartDesign::ShapeBinder','ShapeBinder'); sb.Support = [(other_obj, ['Face1'])]",
-    "after": [
-     "geometry in another body"
+    "csg_part": [
+      "Std_New > Part_Box [ | Part_Primitives ] > Std_Placement",
+      "  > Part_Cut [ | Part_Fuse | Part_Common ] > Part_RefineShape > Part_CheckGeometry",
+      "  > Part_Fillet > Mesh_FromPartShape > Mesh_Export"
     ],
-    "next": [
-     "PartDesign_NewSketch"
+    "2d_to_3d": [
+      "Import_SVG [ | Import_DXF | Draft_Wire | Draft_ShapeString ] > Draft_Upgrade(repeat until faces)",
+      "  > { Part_Extrude | Draft_Draft2Sketch > PartDesign_Pad }"
     ],
-    "note": "Copies external geometry into this body so you can reference it. Static copy."
-   },
-   {
-    "id": "PartDesign_SubShapeBinder",
-    "py": "sb = body.newObject('PartDesign::SubShapeBinder','Binder'); sb.Support = [(other_obj, ('Face1',))]",
-    "after": [
-     "geometry elsewhere in the document"
+    "assembly": [
+      "(one document per part, saved) > Std_New > Assembly_CreateAssembly",
+      "  > Assembly_Insert (x N) > Assembly_ToggleGrounded (EXACTLY ONE, first)",
+      "  > Assembly_CreateJointFixed [ | Revolute | Slider | Cylindrical | Ball | Distance ] (x N)",
+      "  > Assembly_SolveAssembly > Assembly_SelectComponentsWithDoFs (verify)",
+      "  > { Assembly_CreateBom > TechDraw_SpreadsheetView | Assembly_CreateView | Assembly_CreateSimulation }"
     ],
-    "next": [
-     "PartDesign_NewSketch"
+    "drawing": [
+      "(a finished body or assembly) > TechDraw_PageDefault",
+      "  > TechDraw_ProjectionGroup [ | TechDraw_View ] > TechDraw_RedrawPage",
+      "  > TechDraw_SectionView [ | TechDraw_DetailView ] > TechDraw_Hatch",
+      "  > TechDraw_2PointCenterLine > TechDraw_Dimension (x N) > TechDraw_Balloon > TechDraw_Annotation",
+      "  > TechDraw_ExportPageSVG [ | DXF | print PDF ]"
     ],
-    "note": "Preferred over ShapeBinder: works across App::Part containers and stays linked."
-   },
-   {
-    "id": "PartDesign_Boolean",
-    "py": "b = body.newObject('PartDesign::Boolean','Boolean'); b.Group=[other_body]; b.Type=0",
-    "after": [
-     "2 bodies"
+    "simulation": [
+      "(a finished body) > FEM_Analysis > FEM_SolverCalculiX > FEM_MaterialSolid",
+      "  > FEM_ConstraintFixed (mandatory) > FEM_ConstraintForce [ | Pressure | SelfWeight | Temperature ]",
+      "  > FEM_MeshGmshFromShape [ + FEM_MeshRegion ] > FEM_SolverRun",
+      "  > FEM_ResultShow > FEM_PostPipelineFromResult > FEM_PostFilterWarp/Contours",
+      "  > (too high? change a Spreadsheet cell > Std_Refresh > FEM_ResultsPurge > FEM_SolverRun again)"
     ],
-    "next": [],
-    "note": "Type: 0=Fuse 1=Cut 2=Common. Merges another body INTO this one and consumes it."
-   },
-   {
-    "id": "PartDesign_Clone",
-    "py": "c = doc.addObject('PartDesign::FeatureBase','Clone')",
-    "after": [
-     "a body"
+    "3d_printing": [
+      "(a finished body) > Part_CheckGeometry > Measure_BoundingBox (fits the bed?)",
+      "  > Mesh_FromPartShape(LinearDeflection 0.01-0.1) > Mesh_Evaluate > Mesh_Export('.stl')"
     ],
-    "next": [],
-    "note": "Parametric copy of a whole body."
-   },
-   {
-    "id": "PartDesign_MoveTip",
-    "py": "body.Tip = pad",
-    "after": [
-     "multiple features"
+    "machining": [
+      "(a finished body) > CAM_Job > tool table > CAM_Profile/Pocket/Drilling > simulate > CAM_PostProcess"
     ],
-    "next": [
-     "PartDesign_NewSketch"
-    ],
-    "note": "Rewind history to insert a feature in the middle of the tree."
-   },
-   {
-    "id": "PartDesign_MoveFeature",
-    "py": "other_body.addObject(feature)",
-    "after": [
-     "a feature"
-    ],
-    "next": []
-   },
-   {
-    "id": "PartDesign_Migrate",
-    "py": "Gui.runCommand('PartDesign_Migrate',0)",
-    "after": [
-     "pre-0.17 file"
-    ],
-    "next": []
-   }
-  ],
-  "Sketcher_geometry": [
-   {
-    "id": "Sketcher_NewSketch",
-    "py": "sk = doc.addObject('Sketcher::SketchObject','Sketch'); sk.Placement = App.Placement(App.Vector(0,0,0), App.Rotation())",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Sketcher_CreateLine",
-     "Sketcher_ConstrainDistance"
-    ],
-    "note": "Standalone sketch (Part workflow). Inside PartDesign use PartDesign_NewSketch."
-   },
-   {
-    "id": "Sketcher_EditSketch",
-    "py": "Gui.activeDocument().setEdit(sk.Name)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_CreateLine"
-    ],
-    "note": "Only needed for GUI commands. Scripting never needs edit mode."
-   },
-   {
-    "id": "Sketcher_LeaveSketch",
-    "py": "Gui.activeDocument().resetEdit()",
-    "after": [
-     "edit mode"
-    ],
-    "next": [
-     "PartDesign_Pad"
+    "reverse_engineering": [
+      "Mesh_Import [ | Points_Import ] > Mesh_Evaluate > Part_ShapeFromMesh > Part_MakeSolid > Part_RefineShape",
+      "  > (measure it, then remodel it properly in PartDesign - the converted shell is faceted, not parametric)"
     ]
-   },
-   {
-    "id": "Sketcher_CreateLine",
-    "py": "i = sk.addGeometry(Part.LineSegment(App.Vector(0,0,0), App.Vector(10,0,0)), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_ConstrainCoincident",
-     "Sketcher_ConstrainHorizontal"
-    ],
-    "note": "addGeometry returns the index used by every constraint. Second arg True = construction geometry."
-   },
-   {
-    "id": "Sketcher_CreatePolyline",
-    "py": "[sk.addGeometry(Part.LineSegment(pts[i], pts[i+1]), False) for i in range(len(pts)-1)]",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_ConstrainCoincident"
-    ],
-    "note": "Then coincident-constrain each end to the next start, or the profile is not closed."
-   },
-   {
-    "id": "Sketcher_CreateRectangle",
-    "py": "import SketcherGui; sk.addGeometry(Part.LineSegment(...)) x4 + 2 Horizontal + 2 Vertical + 4 Coincident",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_ConstrainDistanceX",
-     "PartDesign_Pad"
-    ],
-    "note": "No single API call. Fastest correct rectangle in script: 4 lines, coincident-chain them, then Horizontal on 0 and 2, Vertical on 1 and 3."
-   },
-   {
-    "id": "Sketcher_CreateCircle",
-    "py": "i = sk.addGeometry(Part.Circle(App.Vector(0,0,0), App.Vector(0,0,1), 5), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_ConstrainRadius",
-     "PartDesign_Pocket"
-    ],
-    "note": "Normal must be (0,0,1) - sketch geometry lives in the sketch's local XY."
-   },
-   {
-    "id": "Sketcher_CreateArc",
-    "py": "sk.addGeometry(Part.ArcOfCircle(Part.Circle(App.Vector(0,0,0),App.Vector(0,0,1),5), 0, 1.57), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_ConstrainTangent"
-    ],
-    "note": "Angles in RADIANS here, unlike everywhere else in FreeCAD."
-   },
-   {
-    "id": "Sketcher_Create3PointArc",
-    "py": "Gui.runCommand('Sketcher_Create3PointArc',0)",
-    "after": [
-     "a sketch"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_CreateEllipseByCenter",
-    "py": "sk.addGeometry(Part.Ellipse(App.Vector(10,0,0), App.Vector(0,5,0), App.Vector(0,0,0)), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [],
-    "note": "Args: major-axis point, minor-axis point, centre."
-   },
-   {
-    "id": "Sketcher_CreateArcOfEllipse",
-    "py": "sk.addGeometry(Part.ArcOfEllipse(Part.Ellipse(...), 0, 1.57), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_CreateArcOfHyperbola",
-    "py": "sk.addGeometry(Part.ArcOfHyperbola(Part.Hyperbola(...), 0, 1), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_CreateArcOfParabola",
-    "py": "sk.addGeometry(Part.ArcOfParabola(Part.Parabola(...), -1, 1), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_CreateBSpline",
-    "py": "sk.addGeometry(Part.BSplineCurve(pts_list), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_BSplineInsertKnot"
-    ],
-    "note": "Use Part.BSplineCurve().interpolate(pts) to pass THROUGH points instead of using them as poles."
-   },
-   {
-    "id": "Sketcher_CreatePeriodicBSpline",
-    "py": "bs = Part.BSplineCurve(); bs.buildFromPolesMultsKnots(poles, mults, knots, True)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [],
-    "note": "Closed spline."
-   },
-   {
-    "id": "Sketcher_CreatePoint",
-    "py": "sk.addGeometry(Part.Point(App.Vector(5,5,0)), False)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "Sketcher_ConstrainSymmetric"
-    ],
-    "note": "Construction points are excellent stable references."
-   },
-   {
-    "id": "Sketcher_CreatePolygon",
-    "py": "Gui.runCommand('Sketcher_CreateHexagon',0)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [],
-    "note": "Variants: Sketcher_CreateTriangle/Square/Pentagon/Hexagon/Heptagon/Octagon/RegularPolygon. Scripted: build n lines + a construction circle + Equal constraints."
-   },
-   {
-    "id": "Sketcher_CreateSlot",
-    "py": "Gui.runCommand('Sketcher_CreateSlot',0)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [],
-    "note": "Also Sketcher_CreateArcSlot, Sketcher_CreateOblong (rounded rectangle)."
-   },
-   {
-    "id": "Sketcher_CreateFillet",
-    "py": "sk.fillet(geoId1, pos1, geoId2, pos2, radius, True)",
-    "after": [
-     "2 connected lines"
-    ],
-    "next": [],
-    "note": "Sketch-level fillet; cheaper than a solid fillet and immune to face renaming."
-   },
-   {
-    "id": "Sketcher_CreateChamfer",
-    "py": "Gui.runCommand('Sketcher_CreateChamfer',0)",
-    "after": [
-     "2 connected lines"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_Trimming",
-    "py": "sk.trim(geoId, App.Vector(x,y,0))",
-    "after": [
-     "overlapping geometry"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_Extend",
-    "py": "sk.extend(geoId, increment, endpoint)",
-    "after": [
-     "a line"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_Split",
-    "py": "sk.split(geoId, App.Vector(x,y,0))",
-    "after": [
-     "a curve"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_JoinCurves",
-    "py": "Gui.runCommand('Sketcher_JoinCurves',0)",
-    "after": [
-     "2 endpoint-coincident curves"
-    ],
-    "next": [],
-    "note": "Merges into one B-spline."
-   },
-   {
-    "id": "Sketcher_Offset",
-    "py": "Gui.runCommand('Sketcher_Offset',0)",
-    "after": [
-     "selected geometry"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_Symmetry",
-    "py": "Gui.runCommand('Sketcher_Symmetry',0)",
-    "after": [
-     "geometry + a line/point"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_RectangularArray",
-    "py": "sk.addRectangularArray(geoIdList, App.Vector(dx,dy,0), True, cols, rows, True)",
-    "after": [
-     "geometry"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ToggleConstruction",
-    "py": "sk.toggleConstruction(geoId)",
-    "after": [
-     "geometry"
-    ],
-    "next": [],
-    "note": "Construction geometry is not exported to Pad/Pocket - use it for centrelines, bolt circles, symmetry axes."
-   },
-   {
-    "id": "Sketcher_Projection",
-    "py": "sk.addExternal(obj.Name, 'Edge3')",
-    "after": [
-     "sketch attached near existing geometry"
-    ],
-    "next": [
-     "Sketcher_ConstrainCoincident"
-    ],
-    "note": "External geometry gets NEGATIVE indices starting at -3 (-1 and -2 are the sketch axes). Fragile under topological renaming."
-   },
-   {
-    "id": "Sketcher_CarbonCopy",
-    "py": "sk.carbonCopy(other_sketch.Name)",
-    "after": [
-     "another sketch"
-    ],
-    "next": [],
-    "note": "Copies geometry AND constraints from another sketch."
-   },
-   {
-    "id": "Sketcher_MergeSketches",
-    "py": "Gui.runCommand('Sketcher_MergeSketches',0)",
-    "after": [
-     "2 sketches selected"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_MapSketch",
-    "py": "sk.AttachmentSupport = [(obj,'Face3')]; sk.MapMode = 'FlatFace'",
-    "after": [
-     "a sketch + a face"
-    ],
-    "next": [
-     "PartDesign_Pad"
-    ],
-    "note": "MapMode values: Deactivated, FlatFace, ObjectXY, ObjectXZ, ObjectYZ, TangentPlane, NormalToEdge, Concentric, ThreePointsPlane."
-   },
-   {
-    "id": "Sketcher_ReorientSketch",
-    "py": "sk.Placement = App.Placement(App.Vector(0,0,0), App.Rotation(App.Vector(1,0,0), 90))",
-    "after": [
-     "a detached sketch"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ValidateSketch",
-    "py": "print(sk.solve(), sk.FullyConstrained, sk.Shape.isClosed() if sk.Shape.Wires else None)",
-    "after": [
-     "a sketch"
-    ],
-    "next": [
-     "PartDesign_Pad"
-    ],
-    "note": "ALWAYS run before padding. solve()==0 means solved. Also check sk.OpenVertices == [] for a closed profile."
-   },
-   {
-    "id": "Sketcher_DeleteAllGeometry",
-    "py": "sk.deleteAllGeometry()",
-    "after": [
-     "a sketch"
-    ],
-    "next": []
-   }
-  ],
-  "Sketcher_constraints": [
-   {
-    "id": "__how__",
-    "py": "sk.addConstraint(Sketcher.Constraint('Type', args...))  # returns constraint index",
-    "after": [],
-    "next": [],
-    "note": "PointPos: 1=start 2=end 3=centre. Axis refs: geoId -1 = X axis, -2 = Y axis; the origin point is (-1, 1). Add geometric constraints BEFORE dimensional ones - the solver converges far better."
-   },
-   {
-    "id": "Sketcher_ConstrainCoincident",
-    "py": "sk.addConstraint(Sketcher.Constraint('Coincident', g1, 2, g2, 1))",
-    "after": [
-     "2 points"
-    ],
-    "next": [
-     "Sketcher_ConstrainDistance"
-    ],
-    "note": "The workhorse. Chain endpoints to close a profile. Coincident to (-1,1) pins geometry to the origin."
-   },
-   {
-    "id": "Sketcher_ConstrainHorizontal",
-    "py": "sk.addConstraint(Sketcher.Constraint('Horizontal', g1))",
-    "after": [
-     "a line"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainVertical",
-    "py": "sk.addConstraint(Sketcher.Constraint('Vertical', g1))",
-    "after": [
-     "a line"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainParallel",
-    "py": "sk.addConstraint(Sketcher.Constraint('Parallel', g1, g2))",
-    "after": [
-     "2 lines"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainPerpendicular",
-    "py": "sk.addConstraint(Sketcher.Constraint('Perpendicular', g1, g2))",
-    "after": [
-     "2 lines"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainTangent",
-    "py": "sk.addConstraint(Sketcher.Constraint('Tangent', g1, 2, g2, 1))",
-    "after": [
-     "line+arc or arc+arc"
-    ],
-    "next": [],
-    "note": "Endpoint-to-endpoint tangency (4 args) also enforces coincidence - do not add a separate Coincident or you get a redundancy."
-   },
-   {
-    "id": "Sketcher_ConstrainEqual",
-    "py": "sk.addConstraint(Sketcher.Constraint('Equal', g1, g2))",
-    "after": [
-     "2 same-type curves"
-    ],
-    "next": [],
-    "note": "Cheapest way to cut the DOF count on symmetric shapes."
-   },
-   {
-    "id": "Sketcher_ConstrainSymmetric",
-    "py": "sk.addConstraint(Sketcher.Constraint('Symmetric', g1, 1, g2, 2, -2))",
-    "after": [
-     "2 points + an axis/line"
-    ],
-    "next": [],
-    "note": "Symmetric about the Y axis here. Better than two mirrored dimensions."
-   },
-   {
-    "id": "Sketcher_ConstrainPointOnObject",
-    "py": "sk.addConstraint(Sketcher.Constraint('PointOnObject', g1, 1, g2))",
-    "after": [
-     "a point + a curve"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainBlock",
-    "py": "sk.addConstraint(Sketcher.Constraint('Block', g1))",
-    "after": [
-     "a curve"
-    ],
-    "next": [],
-    "note": "Freezes one element. Escape hatch for hard-to-constrain splines."
-   },
-   {
-    "id": "Sketcher_ConstrainLock",
-    "py": "Gui.runCommand('Sketcher_ConstrainLock',0)",
-    "after": [
-     "a point"
-    ],
-    "next": [],
-    "note": "Adds DistanceX + DistanceY. Convenient but over-constrains easily - prefer explicit constraints."
-   },
-   {
-    "id": "Sketcher_ConstrainDistance",
-    "py": "sk.addConstraint(Sketcher.Constraint('Distance', g1, 30))",
-    "after": [
-     "a line, or 2 points"
-    ],
-    "next": [
-     "Sketcher_ValidateSketch"
-    ],
-    "note": "Forms: (g1, len) line length; (g1,p1,g2,p2,len) point-to-point; (g1,p1,g2,len) point-to-line."
-   },
-   {
-    "id": "Sketcher_ConstrainDistanceX",
-    "py": "sk.addConstraint(Sketcher.Constraint('DistanceX', g1, 1, g2, 1, 20))",
-    "after": [
-     "points"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainDistanceY",
-    "py": "sk.addConstraint(Sketcher.Constraint('DistanceY', g1, 1, g2, 1, 20))",
-    "after": [
-     "points"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainRadius",
-    "py": "sk.addConstraint(Sketcher.Constraint('Radius', g1, 5))",
-    "after": [
-     "a circle/arc"
-    ],
-    "next": []
-   },
-   {
-    "id": "Sketcher_ConstrainDiameter",
-    "py": "sk.addConstraint(Sketcher.Constraint('Diameter', g1, 10))",
-    "after": [
-     "a circle"
-    ],
-    "next": [],
-    "note": "Use Diameter for holes - it matches how the part is manufactured and inspected."
-   },
-   {
-    "id": "Sketcher_ConstrainAngle",
-    "py": "sk.addConstraint(Sketcher.Constraint('Angle', g1, 2, g2, 1, 0.785))",
-    "after": [
-     "2 lines"
-    ],
-    "next": [],
-    "note": "RADIANS."
-   },
-   {
-    "id": "Sketcher_ConstrainSnellsLaw",
-    "py": "sk.addConstraint(Sketcher.Constraint('SnellsLaw', ...))",
-    "after": [
-     "2 rays + interface"
-    ],
-    "next": [],
-    "note": "Optics only."
-   },
-   {
-    "id": "Sketcher_ToggleDrivingConstraint",
-    "py": "sk.setDriving(constraintIndex, False)",
-    "after": [
-     "a dimensional constraint"
-    ],
-    "next": [],
-    "note": "Non-driving = a measurement readout instead of a rule. Useful for reporting a derived length."
-   },
-   {
-    "id": "Sketcher_ChangeDimensionConstraint",
-    "py": "sk.setDatum(constraintIndex, App.Units.Quantity('25 mm'))",
-    "after": [
-     "a dimensional constraint"
-    ],
-    "next": [
-     "Std_Refresh"
-    ],
-    "note": "THE way to parametrically drive a model. Name the constraint (sk.renameConstraint(i,'width')) then sk.setDatum('width', 25)."
-   },
-   {
-    "id": "Sketcher_SelectElementsWithDoFs",
-    "py": "print(sk.FullyConstrained, sk.solve())",
-    "after": [
-     "a sketch"
-    ],
-    "next": [],
-    "note": "Diagnose under-constraint. Also: sk.ConflictingConstraints, sk.RedundantConstraints, sk.PartiallyRedundantConstraints, sk.MalformedConstraints - all should be empty lists."
-   },
-   {
-    "id": "Sketcher_DeleteAllConstraints",
-    "py": "sk.delConstraint(i)  # or sk.deleteAllConstraints()",
-    "after": [
-     "constraints"
-    ],
-    "next": [],
-    "note": "Deleting shifts all higher indices down. Delete in descending order."
-   }
-  ],
-  "Part": [
-   {
-    "id": "Part_Box",
-    "py": "b = doc.addObject('Part::Box','Box'); b.Length=10; b.Width=20; b.Height=5",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Part_Cut",
-     "Part_Fillet",
-     "Std_Placement"
-    ],
-    "note": "Non-parametric-history CSG. Faster than PartDesign when you just need a shape; no feature tree to maintain."
-   },
-   {
-    "id": "Part_Primitives",
-    "py": "doc.addObject('Part::Cylinder','Cyl').Radius = 5",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Part_Boolean"
-    ],
-    "note": "Types: Part::Box, Cylinder, Sphere, Cone, Torus, Prism, Wedge, Helix, Spiral, Ellipsoid, Plane, Vertex, Line, RegularPolygon."
-   },
-   {
-    "id": "Part_Cut",
-    "py": "c = doc.addObject('Part::Cut','Cut'); c.Base = a; c.Tool = b",
-    "after": [
-     "2 solids"
-    ],
-    "next": [
-     "Part_RefineShape",
-     "Part_Fillet"
-    ],
-    "note": "Base minus Tool. Both inputs get hidden and become children."
-   },
-   {
-    "id": "Part_Fuse",
-    "py": "f = doc.addObject('Part::MultiFuse','Fusion'); f.Shapes = [a,b,c]",
-    "after": [
-     "2+ solids"
-    ],
-    "next": [
-     "Part_RefineShape"
-    ],
-    "note": "MultiFuse takes a list; Part::Fuse takes Base/Tool. Prefer MultiFuse."
-   },
-   {
-    "id": "Part_Common",
-    "py": "c = doc.addObject('Part::MultiCommon','Common'); c.Shapes = [a,b]",
-    "after": [
-     "2+ solids"
-    ],
-    "next": []
-   },
-   {
-    "id": "Part_Boolean",
-    "py": "result = a.Shape.cut(b.Shape)  # then Part.show(result)",
-    "after": [
-     "2 shapes"
-    ],
-    "next": [],
-    "note": "Direct TopoShape ops (cut/fuse/common/section) skip the document entirely - fastest path for throwaway geometry. Part.show(shape,'Name') puts it in the document."
-   },
-   {
-    "id": "Part_Extrude",
-    "py": "e = doc.addObject('Part::Extrusion','Extrude'); e.Base = sk; e.DirMode='Normal'; e.LengthFwd=10; e.Solid=True",
-    "after": [
-     "a sketch/wire/face"
-    ],
-    "next": [
-     "Part_Fuse"
-    ],
-    "note": "Set Solid=True or you get a hollow shell."
-   },
-   {
-    "id": "Part_Revolve",
-    "py": "r = doc.addObject('Part::Revolution','Revolve'); r.Source=sk; r.Axis=(0,0,1); r.Angle=360; r.Solid=True",
-    "after": [
-     "a profile"
-    ],
-    "next": []
-   },
-   {
-    "id": "Part_Loft",
-    "py": "l = doc.addObject('Part::Loft','Loft'); l.Sections=[sk1,sk2]; l.Solid=True; l.Ruled=False",
-    "after": [
-     "2+ profiles"
-    ],
-    "next": []
-   },
-   {
-    "id": "Part_Sweep",
-    "py": "s = doc.addObject('Part::Sweep','Sweep'); s.Sections=[profile]; s.Spine=(path,['Edge1']); s.Solid=True; s.Frenet=True",
-    "after": [
-     "profile + path"
-    ],
-    "next": []
-   },
-   {
-    "id": "Part_Fillet",
-    "py": "f = doc.addObject('Part::Fillet','Fillet'); f.Base = box; f.Edges = [(1, 2.0, 2.0), (2, 2.0, 2.0)]",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "Edges is a list of (1-based edge index, start radius, end radius)."
-   },
-   {
-    "id": "Part_Chamfer",
-    "py": "c = doc.addObject('Part::Chamfer','Chamfer'); c.Base = box; c.Edges = [(1, 1.0, 1.0)]",
-    "after": [
-     "a solid"
-    ],
-    "next": []
-   },
-   {
-    "id": "Part_Mirror",
-    "py": "m = doc.addObject('Part::Mirroring','Mirror'); m.Source=obj; m.Base=App.Vector(0,0,0); m.Normal=App.Vector(1,0,0)",
-    "after": [
-     "a shape"
-    ],
-    "next": [
-     "Part_Fuse"
-    ]
-   },
-   {
-    "id": "Part_Offset",
-    "py": "o = doc.addObject('Part::Offset','Offset'); o.Source=obj; o.Value=2; o.Mode=0; o.Join=0",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "Join: 0=Arc 1=Tangent 2=Intersection. Part_Offset2D for planar wires."
-   },
-   {
-    "id": "Part_Thickness",
-    "py": "t = doc.addObject('Part::Thickness','Thickness'); t.Faces=(box,['Face6']); t.Value=-2",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "Negative value = inward."
-   },
-   {
-    "id": "Part_Scale",
-    "py": "m = App.Matrix(); m.scale(2,2,2); newshape = obj.Shape.transformGeometry(m)",
-    "after": [
-     "a shape"
-    ],
-    "next": [],
-    "note": "transformGeometry is the only true non-uniform scale; Placement cannot scale."
-   },
-   {
-    "id": "Part_Section",
-    "py": "s = doc.addObject('Part::Section','Section'); s.Base=a; s.Tool=plane",
-    "after": [
-     "solid + plane"
-    ],
-    "next": [
-     "Draft_Shape2DView"
-    ]
-   },
-   {
-    "id": "Part_CrossSections",
-    "py": "wires = obj.Shape.slice(App.Vector(0,0,1), z)",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "obj.Shape.slices(dir, [z1,z2,...]) for a whole stack - the basis of any slicer."
-   },
-   {
-    "id": "Part_SectionCut",
-    "py": "Gui.runCommand('Part_SectionCut',0)",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "View-only cutaway. Does not modify geometry."
-   },
-   {
-    "id": "Part_RuledSurface",
-    "py": "doc.addObject('Part::RuledSurface','Ruled')",
-    "after": [
-     "2 edges/wires"
-    ],
-    "next": []
-   },
-   {
-    "id": "Part_MakeFace",
-    "py": "face = Part.Face(Part.Wire(edges))",
-    "after": [
-     "a closed wire"
-    ],
-    "next": [
-     "Part_Extrude"
-    ]
-   },
-   {
-    "id": "Part_MakeSolid",
-    "py": "solid = Part.Solid(Part.Shell(faces))",
-    "after": [
-     "a closed shell"
-    ],
-    "next": [],
-    "note": "Check shell.isClosed() first or the solid is invalid."
-   },
-   {
-    "id": "Part_RefineShape",
-    "py": "newshape = obj.Shape.removeSplitter(); Part.show(newshape)",
-    "after": [
-     "a boolean result"
-    ],
-    "next": [],
-    "note": "Removes the co-planar seam faces booleans leave behind. Do this before exporting or filleting - it usually fixes 'fillet failed'."
-   },
-   {
-    "id": "Part_CheckGeometry",
-    "py": "print(obj.Shape.isValid(), obj.Shape.ShapeType, len(obj.Shape.Solids)); obj.Shape.check(True)",
-    "after": [
-     "a shape"
-    ],
-    "next": [
-     "Part_RefineShape"
-    ],
-    "note": "First thing to run when a downstream operation fails."
-   },
-   {
-    "id": "Part_Defeaturing",
-    "py": "Gui.runCommand('Part_Defeaturing',0)",
-    "after": [
-     "imported solid"
-    ],
-    "next": [],
-    "note": "Removes selected faces (holes, fillets) from a dumb import."
-   },
-   {
-    "id": "Part_ReverseShape",
-    "py": "obj.Shape.reverse()",
-    "after": [
-     "a shape"
-    ],
-    "next": [],
-    "note": "Flips normals. Fixes inside-out imported meshes/shells."
-   },
-   {
-    "id": "Part_SimpleCopy",
-    "py": "newobj = doc.addObject('Part::Feature','Copy'); newobj.Shape = obj.Shape.copy()",
-    "after": [
-     "a shape"
-    ],
-    "next": [],
-    "note": "Breaks the parametric link - the way to freeze a result."
-   },
-   {
-    "id": "Part_ShapeFromMesh",
-    "py": "sh = Part.Shape(); sh.makeShapeFromMesh(mesh.Mesh.Topology, 0.1); Part.show(sh)",
-    "after": [
-     "a mesh"
-    ],
-    "next": [
-     "Part_MakeSolid",
-     "Part_RefineShape"
-    ],
-    "note": "STL to B-rep. Produces a faceted shell, not smooth surfaces. Follow with Part.Solid() then refine."
-   },
-   {
-    "id": "Part_Builder",
-    "py": "Gui.runCommand('Part_Builder',0)",
-    "after": [
-     "vertices/edges/faces"
-    ],
-    "next": [],
-    "note": "Assemble shapes bottom-up from selected sub-elements."
-   },
-   {
-    "id": "Part_Import",
-    "py": "import Import; Import.insert('/path/f.step', doc.Name)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Part_RefineShape",
-     "PartDesign_ShapeBinder"
-    ],
-    "note": "STEP/IGES/BREP. Import.export([obj], '/path/out.step')."
-   },
-   {
-    "id": "Part_JoinConnect",
-    "py": "doc.addObject('Part::Connect','Connect').Objects = [a,b]",
-    "after": [
-     "2 shells/solids"
-    ],
-    "next": [],
-    "note": "Part::JoinConnect / JoinEmbed / JoinCutout - for joining pipes and sheet-like bodies."
-   },
-   {
-    "id": "Part_BooleanFragments",
-    "py": "import BOPTools.SplitFeatures; BOPTools.SplitFeatures.makeBooleanFragments(name='BF')",
-    "after": [
-     "2+ shapes"
-    ],
-    "next": [],
-    "note": "Splits everything at every intersection. Also makeSlice, makeXOR."
-   },
-   {
-    "id": "Part_Measure",
-    "py": "d = obj.Shape.distToShape(other.Shape)[0]; obj.Shape.Volume; obj.Shape.Area; obj.Shape.BoundBox; obj.Shape.CenterOfMass",
-    "after": [
-     "shapes"
-    ],
-    "next": [],
-    "note": "Everything the Measure workbench does is available directly on Shape. Also Shape.getMomentOfInertia / .Inertia via Shape.MatrixOfInertia."
-   }
-  ],
-  "Draft": [
-   {
-    "id": "Draft_SelectPlane",
-    "py": "import WorkingPlane; WorkingPlane.get_working_plane().align_to_point_and_axis(App.Vector(0,0,0), App.Vector(0,0,1), 0)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Draft_Line",
-     "Draft_Rectangle"
-    ],
-    "note": "Do this FIRST. Every Draft tool draws on the working plane; wrong plane is the #1 Draft failure."
-   },
-   {
-    "id": "Draft_Line",
-    "py": "Draft.make_line(App.Vector(0,0,0), App.Vector(10,0,0))",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": [
-     "Draft_Upgrade",
-     "Draft_Dimension"
-    ]
-   },
-   {
-    "id": "Draft_Wire",
-    "py": "Draft.make_wire([p1,p2,p3], closed=True, face=True)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": [
-     "Part_Extrude",
-     "Draft_Upgrade"
-    ],
-    "note": "closed=True + face=True gives an extrudable face in one call - the quickest 2D-to-3D route in all of FreeCAD."
-   },
-   {
-    "id": "Draft_Rectangle",
-    "py": "Draft.make_rectangle(length=10, height=5, placement=None, face=True)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": [
-     "Part_Extrude"
-    ]
-   },
-   {
-    "id": "Draft_Circle",
-    "py": "Draft.make_circle(radius=5, face=True)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": [
-     "Draft_OrthoArray"
-    ]
-   },
-   {
-    "id": "Draft_Arc",
-    "py": "Draft.make_circle(radius=5, startangle=0, endangle=90)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": [],
-    "note": "An arc is a Draft circle with start/end angles. Draft_Arc_3Points: Draft.make_arc_3points([p1,p2,p3])."
-   },
-   {
-    "id": "Draft_Ellipse",
-    "py": "Draft.make_ellipse(10, 5)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Polygon",
-    "py": "Draft.make_polygon(6, radius=10, inscribed=True, face=True)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": [
-     "Part_Extrude"
-    ]
-   },
-   {
-    "id": "Draft_BSpline",
-    "py": "Draft.make_bspline([p1,p2,p3], closed=False)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_BezCurve",
-    "py": "Draft.make_bezcurve([p1,p2,p3], degree=3)",
-    "after": [
-     "Draft_SelectPlane"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Point",
-    "py": "Draft.make_point(1,2,3)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Draft_PointArray"
-    ]
-   },
-   {
-    "id": "Draft_ShapeString",
-    "py": "Draft.make_shapestring('TEXT', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 10)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Part_Extrude",
-     "PartDesign_Pocket"
-    ],
-    "note": "The only way to get engravable/embossable text geometry. Needs a real font file path."
-   },
-   {
-    "id": "Draft_Text",
-    "py": "Draft.make_text(['line1','line2'], App.Vector(0,0,0))",
-    "after": [
-     "Std_New"
-    ],
-    "next": [],
-    "note": "Annotation only - no geometry."
-   },
-   {
-    "id": "Draft_Dimension",
-    "py": "Draft.make_dimension(p1, p2, App.Vector(0,-5,0))",
-    "after": [
-     "geometry"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Label",
-    "py": "Draft.make_label(target_point=p, placement=pl)",
-    "after": [
-     "geometry"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Move",
-    "py": "Draft.move([obj], App.Vector(10,0,0), copy=False)",
-    "after": [
-     "objects"
-    ],
-    "next": [],
-    "note": "copy=True duplicates. Works on any object, not just Draft ones."
-   },
-   {
-    "id": "Draft_Rotate",
-    "py": "Draft.rotate([obj], 45, center=App.Vector(0,0,0), axis=App.Vector(0,0,1), copy=False)",
-    "after": [
-     "objects"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Scale",
-    "py": "Draft.scale([obj], App.Vector(2,2,2), center=App.Vector(0,0,0), copy=False)",
-    "after": [
-     "objects"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Mirror",
-    "py": "Draft.mirror([obj], p1, p2)",
-    "after": [
-     "objects"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Offset",
-    "py": "Draft.offset(obj, App.Vector(1,0,0), copy=True)",
-    "after": [
-     "a wire"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Trimex",
-    "py": "Gui.runCommand('Draft_Trimex',0)",
-    "after": [
-     "a wire"
-    ],
-    "next": [],
-    "note": "Trim/extend/extrude in one tool."
-   },
-   {
-    "id": "Draft_Join",
-    "py": "Draft.join_wires([w1, w2])",
-    "after": [
-     "2 wires"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Split",
-    "py": "Draft.split_wire(wire, edge_index)",
-    "after": [
-     "a wire"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Upgrade",
-    "py": "Draft.upgrade([obj], delete=True)",
-    "after": [
-     "edges/wires/faces"
-    ],
-    "next": [
-     "Part_Extrude"
-    ],
-    "note": "Edges to wire, closed wire to face, faces to shell to solid. Run it repeatedly; it climbs one level each time. Draft_Downgrade goes the other way."
-   },
-   {
-    "id": "Draft_Draft2Sketch",
-    "py": "Draft.draft_to_sketch([obj])",
-    "after": [
-     "Draft geometry"
-    ],
-    "next": [
-     "PartDesign_Pad"
-    ],
-    "note": "The bridge from Draft into a constrainable PartDesign workflow."
-   },
-   {
-    "id": "Draft_OrthoArray",
-    "py": "Draft.make_ortho_array(obj, App.Vector(10,0,0), App.Vector(0,10,0), App.Vector(0,0,0), 5, 3, 1, use_link=True)",
-    "after": [
-     "an object"
-    ],
-    "next": [],
-    "note": "use_link=True keeps it lightweight (App::Link based)."
-   },
-   {
-    "id": "Draft_PolarArray",
-    "py": "Draft.make_polar_array(obj, number=6, angle=360, center=App.Vector(0,0,0))",
-    "after": [
-     "an object"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_CircularArray",
-    "py": "Draft.make_circular_array(obj, r_distance=10, tan_distance=10, number=3, symmetry=1)",
-    "after": [
-     "an object"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_PathArray",
-    "py": "Draft.make_path_array(obj, path, count=10, align=True)",
-    "after": [
-     "object + path wire"
-    ],
-    "next": [],
-    "note": "Chain links, fence posts, anything following a curve."
-   },
-   {
-    "id": "Draft_PointArray",
-    "py": "Draft.make_point_array(obj, point_object)",
-    "after": [
-     "object + point set"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Clone",
-    "py": "Draft.make_clone(obj)",
-    "after": [
-     "an object"
-    ],
-    "next": [],
-    "note": "Parametric copy that tracks the original and can be scaled."
-   },
-   {
-    "id": "Draft_Shape2DView",
-    "py": "Draft.make_shape2dview(obj, App.Vector(0,0,1))",
-    "after": [
-     "a 3D shape"
-    ],
-    "next": [
-     "TechDraw_View",
-     "Draft_Dimension"
-    ],
-    "note": "Flattens 3D to 2D lines - the route from a model to a DXF."
-   },
-   {
-    "id": "Draft_Facebinder",
-    "py": "Draft.make_facebinder(selection)",
-    "after": [
-     "selected faces"
-    ],
-    "next": [
-     "Part_Extrude"
-    ]
-   },
-   {
-    "id": "Draft_Layer",
-    "py": "Draft.make_layer('Walls', line_color=(1.0,0.0,0.0))",
-    "after": [
-     "Std_New"
-    ],
-    "next": [],
-    "note": "Layers map to DXF/DWG layers on export."
-   },
-   {
-    "id": "Draft_Fillet",
-    "py": "Draft.make_fillet([edge1, edge2], radius=2)",
-    "after": [
-     "2 Draft lines"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Hatch",
-    "py": "Gui.runCommand('Draft_Hatch',0)",
-    "after": [
-     "a face"
-    ],
-    "next": []
-   },
-   {
-    "id": "Draft_Snap_Lock",
-    "py": "Gui.runCommand('Draft_Snap_Lock',0)",
-    "after": [],
-    "next": [],
-    "note": "GUI-only. Irrelevant to scripted work; snapping does not apply to API calls."
-   }
-  ],
-  "Assembly": [
-   {
-    "id": "Assembly_CreateAssembly",
-    "py": "asm = doc.addObject('Assembly::AssemblyObject','Assembly')",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Assembly_Insert",
-     "Assembly_InsertNewPart"
-    ],
-    "note": "An assembly is an App::Part subclass; it auto-creates a JointGroup, ViewGroup, etc. Nested assemblies are allowed."
-   },
-   {
-    "id": "Assembly_Insert",
-    "py": "lnk = asm.newObject('App::Link','Link'); lnk.LinkedObject = part_obj; lnk.Placement = App.Placement(...)",
-    "after": [
-     "Assembly_CreateAssembly",
-     "a part"
-    ],
-    "next": [
-     "Assembly_ToggleGrounded",
-     "Assembly_CreateJointFixed"
-    ],
-    "note": "Components are App::Links, never copies. Insert the same part N times = N links, one definition."
-   },
-   {
-    "id": "Assembly_InsertNewPart",
-    "py": "asm.newObject('App::Part','Part')",
-    "after": [
-     "Assembly_CreateAssembly"
-    ],
-    "next": [
-     "PartDesign_Body"
-    ],
-    "note": "Top-down design: model the part in place inside the assembly."
-   },
-   {
-    "id": "Assembly_InsertLink",
-    "py": "Gui.runCommand('Assembly_InsertLink',0)",
-    "after": [
-     "Assembly_CreateAssembly"
-    ],
-    "next": [],
-    "note": "Insert from another open document."
-   },
-   {
-    "id": "Assembly_ToggleGrounded",
-    "py": "g = asm.newObject('Assembly::JointGroup'...)  # GUI command is far simpler here",
-    "after": [
-     "Assembly_Insert"
-    ],
-    "next": [
-     "Assembly_CreateJointRevolute"
-    ],
-    "note": "GROUND EXACTLY ONE COMPONENT FIRST. An ungrounded assembly has no datum and the solver drifts. This is the single most common assembly mistake."
-   },
-   {
-    "id": "Assembly_CreateJointFixed",
-    "py": "jg = asm.Proxy.getJointGroup(asm) if hasattr(asm,'Proxy') else doc.getObject('Joints'); j = jg.newObject('App::FeaturePython','Fixed'); # then JointObject.Joint(j, 0)",
-    "after": [
-     "2 grounded/inserted components"
-    ],
-    "next": [
-     "Assembly_SolveAssembly"
-    ],
-    "note": "Scripting joints is awkward - the practical route is Gui.Selection.addSelection() on two features then Gui.runCommand('Assembly_CreateJointFixed',0). Once created, set j.JointType, j.Reference1, j.Reference2, j.Distance, j.Angle."
-   },
-   {
-    "id": "Assembly_CreateJointRevolute",
-    "py": "j.JointType = 'Revolute'",
-    "after": [
-     "2 components"
-    ],
-    "next": [
-     "Assembly_SolveAssembly"
-    ],
-    "note": "1 rotational DOF. Reference a circular edge or an LCS on each part; FreeCAD derives the axis."
-   },
-   {
-    "id": "Assembly_CreateJointSlider",
-    "py": "j.JointType = 'Slider'",
-    "after": [
-     "2 components"
-    ],
-    "next": [],
-    "note": "1 translational DOF."
-   },
-   {
-    "id": "Assembly_CreateJointCylindrical",
-    "py": "j.JointType = 'Cylindrical'",
-    "after": [
-     "2 components"
-    ],
-    "next": [],
-    "note": "Rotate + slide on the same axis. Shafts in bores."
-   },
-   {
-    "id": "Assembly_CreateJointBall",
-    "py": "j.JointType = 'Ball'",
-    "after": [
-     "2 components"
-    ],
-    "next": [],
-    "note": "3 rotational DOF."
-   },
-   {
-    "id": "Assembly_CreateJointDistance",
-    "py": "j.JointType = 'Distance'; j.Distance = 10",
-    "after": [
-     "2 components"
-    ],
-    "next": [],
-    "note": "Also does plane-plane offset, tangency, and point-on-line depending on what you reference."
-   },
-   {
-    "id": "Assembly_CreateJointParallel",
-    "py": "j.JointType = 'Parallel'",
-    "after": [
-     "2 components"
-    ],
-    "next": []
-   },
-   {
-    "id": "Assembly_CreateJointPerpendicular",
-    "py": "j.JointType = 'Perpendicular'",
-    "after": [
-     "2 components"
-    ],
-    "next": []
-   },
-   {
-    "id": "Assembly_CreateJointAngle",
-    "py": "j.JointType = 'Angle'; j.Angle = 45",
-    "after": [
-     "2 components"
-    ],
-    "next": []
-   },
-   {
-    "id": "Assembly_CreateJointGears",
-    "py": "j.JointType = 'Gears'; j.Radius1 = 10; j.Radius2 = 20",
-    "after": [
-     "2 revolute-jointed components"
-    ],
-    "next": [],
-    "note": "Motion coupling only, not geometry. Also 'RackPinion', 'Screw', 'Belt'."
-   },
-   {
-    "id": "Assembly_SolveAssembly",
-    "py": "asm.solve()",
-    "after": [
-     "joints"
-    ],
-    "next": [
-     "Assembly_CreateView",
-     "Assembly_CreateBom"
-    ],
-    "note": "asm.solve() returns 0 on success. asm.isPartConnected(obj), asm.undoSolve() also exist."
-   },
-   {
-    "id": "Assembly_SelectComponentsWithDoFs",
-    "py": "Gui.runCommand('Assembly_SelectComponentsWithDoFs',0)",
-    "after": [
-     "joints"
-    ],
-    "next": [],
-    "note": "Diagnostic: which parts are still free. Companions: SelectConflictingConstraints, SelectRedundantConstraints, SelectMalformedConstraints."
-   },
-   {
-    "id": "Assembly_CreateBom",
-    "py": "Gui.runCommand('Assembly_CreateBom',0)",
-    "after": [
-     "a populated assembly"
-    ],
-    "next": [
-     "TechDraw_SpreadsheetView"
-    ],
-    "note": "Bill of materials as a Spreadsheet - place it on a TechDraw page."
-   },
-   {
-    "id": "Assembly_CreateView",
-    "py": "Gui.runCommand('Assembly_CreateView',0)",
-    "after": [
-     "an assembly"
-    ],
-    "next": [],
-    "note": "Exploded views."
-   },
-   {
-    "id": "Assembly_CreateSimulation",
-    "py": "Gui.runCommand('Assembly_CreateSimulation',0)",
-    "after": [
-     "joints with motion"
-    ],
-    "next": [],
-    "note": "Kinematic motion study driven by the Ondsel solver."
-   },
-   {
-    "id": "Assembly_ExportASMT",
-    "py": "Gui.runCommand('Assembly_ExportASMT',0)",
-    "after": [
-     "an assembly"
-    ],
-    "next": [],
-    "note": "Debug dump of the solver model."
-   }
-  ],
-  "TechDraw": [
-   {
-    "id": "TechDraw_PageDefault",
-    "py": "page = doc.addObject('TechDraw::DrawPage','Page'); tmpl = doc.addObject('TechDraw::DrawSVGTemplate','Template'); tmpl.Template = App.getResourceDir()+'Mod/TechDraw/Templates/A3_Landscape_blank.svg'; page.Template = tmpl",
-    "after": [
-     "a model"
-    ],
-    "next": [
-     "TechDraw_View",
-     "TechDraw_ProjectionGroup"
-    ],
-    "note": "Root of every drawing. Templates live in <resource>/Mod/TechDraw/Templates/."
-   },
-   {
-    "id": "TechDraw_View",
-    "py": "v = doc.addObject('TechDraw::DrawViewPart','View'); v.Source = [body]; v.Direction = App.Vector(0,0,1); v.XDirection = App.Vector(1,0,0); v.Scale = 1; page.addView(v); v.X = 100; v.Y = 150",
-    "after": [
-     "TechDraw_PageDefault"
-    ],
-    "next": [
-     "TechDraw_LengthDimension",
-     "TechDraw_SectionView"
-    ],
-    "note": "Direction is the view direction. X/Y position on the page in mm. Set v.HardHidden/v.SmoothVisible for line style. Always doc.recompute() - views render lazily."
-   },
-   {
-    "id": "TechDraw_ProjectionGroup",
-    "py": "g = doc.addObject('TechDraw::DrawProjGroup','ProjGroup'); page.addView(g); g.Source=[body]; g.ProjectionType='Third Angle'; g.addProjection('Front'); g.addProjection('Top'); g.addProjection('Right')",
-    "after": [
-     "TechDraw_PageDefault"
-    ],
-    "next": [
-     "TechDraw_LengthDimension"
-    ],
-    "note": "The right way to make a standard multi-view drawing. Anchor is 'Front'; the others align automatically."
-   },
-   {
-    "id": "TechDraw_SectionView",
-    "py": "s = doc.addObject('TechDraw::DrawViewSection','Section'); s.BaseView = v; s.SectionNormal = App.Vector(0,-1,0); s.SectionOrigin = App.Vector(0,0,0); page.addView(s)",
-    "after": [
-     "TechDraw_View"
-    ],
-    "next": [
-     "TechDraw_Hatch"
-    ],
-    "note": "TechDraw_ComplexSection for stepped/aligned sections through a sketch path."
-   },
-   {
-    "id": "TechDraw_DetailView",
-    "py": "d = doc.addObject('TechDraw::DrawViewDetail','Detail'); d.BaseView = v; d.AnchorPoint=App.Vector(10,10,0); d.Radius=5; d.Scale=4",
-    "after": [
-     "TechDraw_View"
-    ],
-    "next": []
-   },
-   {
-    "id": "TechDraw_BrokenView",
-    "py": "Gui.runCommand('TechDraw_BrokenView',0)",
-    "after": [
-     "TechDraw_View"
-    ],
-    "next": [],
-    "note": "Shorten long parts."
-   },
-   {
-    "id": "TechDraw_ActiveView",
-    "py": "Gui.runCommand('TechDraw_ActiveView',0)",
-    "after": [
-     "TechDraw_PageDefault"
-    ],
-    "next": [],
-    "note": "Snapshot of the current 3D viewport, including colours - the quick way to get an isometric picture onto a sheet."
-   },
-   {
-    "id": "TechDraw_LengthDimension",
-    "py": "dim = doc.addObject('TechDraw::DrawViewDimension','Dim'); dim.Type='Distance'; dim.References2D=[(v,'Edge0')]; page.addView(dim)",
-    "after": [
-     "TechDraw_View"
-    ],
-    "next": [
-     "TechDraw_Balloon"
-    ],
-    "note": "Type: Distance, DistanceX, DistanceY, Radius, Diameter, Angle, Angle3Pt, Area. TechDraw sub-element names are 0-INDEXED (Edge0), unlike the 3D model's 1-indexed names."
-   },
-   {
-    "id": "TechDraw_Dimension",
-    "py": "Gui.runCommand('TechDraw_Dimension',0)",
-    "after": [
-     "selected edges/vertices in a view"
-    ],
-    "next": [],
-    "note": "Smart dimension - infers the type from the selection. The one to use interactively."
-   },
-   {
-    "id": "TechDraw_RadiusDimension",
-    "py": "dim.Type = 'Radius'",
-    "after": [
-     "a circular edge"
-    ],
-    "next": []
-   },
-   {
-    "id": "TechDraw_DiameterDimension",
-    "py": "dim.Type = 'Diameter'",
-    "after": [
-     "a circular edge"
-    ],
-    "next": []
-   },
-   {
-    "id": "TechDraw_AngleDimension",
-    "py": "dim.Type = 'Angle'; dim.References2D = [(v,'Edge0'),(v,'Edge2')]",
-    "after": [
-     "2 edges"
-    ],
-    "next": []
-   },
-   {
-    "id": "TechDraw_Balloon",
-    "py": "b = doc.addObject('TechDraw::DrawViewBalloon','Balloon'); b.SourceView = v; b.Text='1'; page.addView(b)",
-    "after": [
-     "TechDraw_View"
-    ],
-    "next": [
-     "Assembly_CreateBom"
-    ],
-    "note": "Assembly item callouts."
-   },
-   {
-    "id": "TechDraw_LeaderLine",
-    "py": "Gui.runCommand('TechDraw_LeaderLine',0)",
-    "after": [
-     "TechDraw_View"
-    ],
-    "next": [
-     "TechDraw_RichTextAnnotation"
-    ]
-   },
-   {
-    "id": "TechDraw_Annotation",
-    "py": "a = doc.addObject('TechDraw::DrawViewAnnotation','Note'); a.Text=['NOTES:','1. Deburr all edges.']; page.addView(a)",
-    "after": [
-     "TechDraw_PageDefault"
-    ],
-    "next": []
-   },
-   {
-    "id": "TechDraw_Hatch",
-    "py": "Gui.runCommand('TechDraw_Hatch',0)",
-    "after": [
-     "a face in a view"
-    ],
-    "next": [],
-    "note": "TechDraw_GeometricHatch for standards-based patterns from a .pat file."
-   },
-   {
-    "id": "TechDraw_2PointCenterLine",
-    "py": "Gui.runCommand('TechDraw_FaceCenterLine',0)",
-    "after": [
-     "a view"
-    ],
-    "next": [],
-    "note": "Also TechDraw_2LineCenterLine, TechDraw_FaceCenterLine, TechDraw_CosmeticVertex, TechDraw_2PointCosmeticLine."
-   },
-   {
-    "id": "TechDraw_SurfaceFinishSymbols",
-    "py": "Gui.runCommand('TechDraw_SurfaceFinishSymbols',0)",
-    "after": [
-     "a view"
-    ],
-    "next": [],
-    "note": "Also TechDraw_WeldSymbol on a leader line."
-   },
-   {
-    "id": "TechDraw_SpreadsheetView",
-    "py": "sv = doc.addObject('TechDraw::DrawViewSpreadsheet','Sheet'); sv.Source = sheet; sv.CellStart='A1'; sv.CellEnd='C10'; page.addView(sv)",
-    "after": [
-     "a spreadsheet + a page"
-    ],
-    "next": [],
-    "note": "Puts a BOM or parts table on the drawing."
-   },
-   {
-    "id": "TechDraw_ExportPageSVG",
-    "py": "import TechDrawGui; TechDrawGui.exportPageAsSvg(page, '/path/out.svg')",
-    "after": [
-     "a finished page"
-    ],
-    "next": [],
-    "note": "exportPageAsDxf(page, path) for CAD interchange. PDF: use the GUI print dialog or FreeCADGui print-to-file."
-   },
-   {
-    "id": "TechDraw_RedrawPage",
-    "py": "page.KeepUpdated = True; doc.recompute()",
-    "after": [
-     "a page"
-    ],
-    "next": [],
-    "note": "Pages default to not auto-updating on big models. Set KeepUpdated when scripting or your views stay blank."
-   }
-  ],
-  "Spreadsheet": [
-   {
-    "id": "Spreadsheet_CreateSheet",
-    "py": "sheet = doc.addObject('Spreadsheet::Sheet','Spreadsheet')",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Spreadsheet_SetAlias"
-    ],
-    "note": "The parameter table. Drive the whole model from here."
-   },
-   {
-    "id": "Spreadsheet_Set",
-    "py": "sheet.set('A1','width'); sheet.set('B1','50')",
-    "after": [
-     "Spreadsheet_CreateSheet"
-    ],
-    "next": [
-     "Spreadsheet_SetAlias"
-    ],
-    "note": "Values are always strings. Formulas start with '=': sheet.set('B3','=B1*2')."
-   },
-   {
-    "id": "Spreadsheet_SetAlias",
-    "py": "sheet.setAlias('B1','width'); doc.recompute()",
-    "after": [
-     "a cell with a value"
-    ],
-    "next": [
-     "Spreadsheet_UseInExpression"
-    ],
-    "note": "Aliases are what make a cell referenceable. Without one the cell is invisible to the model."
-   },
-   {
-    "id": "Spreadsheet_UseInExpression",
-    "py": "pad.setExpression('Length','Spreadsheet.width'); sk.setExpression('Constraints.hole_dia','Spreadsheet.dia')",
-    "after": [
-     "Spreadsheet_SetAlias"
-    ],
-    "next": [
-     "Std_Refresh"
-    ],
-    "note": "Reference named sketch constraints as Constraints.<name>. This is the whole point of parametric CAD - one table drives every dimension."
-   },
-   {
-    "id": "Spreadsheet_Get",
-    "py": "sheet.get('width')  # or sheet.getContents('B1')",
-    "after": [
-     "a sheet"
-    ],
-    "next": [],
-    "note": "get() returns the evaluated value, getContents() the raw string."
-   },
-   {
-    "id": "Spreadsheet_Units",
-    "py": "sheet.set('B1','50mm')",
-    "after": [
-     "a sheet"
-    ],
-    "next": [],
-    "note": "Cells carry units. A unitless cell driving a Length property works, but mixing units in a formula silently fails - keep the sheet consistent."
-   },
-   {
-    "id": "Spreadsheet_Import",
-    "py": "sheet.importFile('/path/data.csv')  # sheet.exportFile('/path/out.csv')",
-    "after": [
-     "a sheet"
-    ],
-    "next": []
-   },
-   {
-    "id": "Spreadsheet_SetStyle",
-    "py": "sheet.setStyle('A1:A5','bold'); sheet.setBackground('A1',(1.0,1.0,0.0,1.0)); sheet.setColumnWidth('A',120)",
-    "after": [
-     "a sheet"
-    ],
-    "next": []
-   }
-  ],
-  "FEM": [
-   {
-    "id": "__how__",
-    "py": "import ObjectsFem, FemGui; analysis = ObjectsFem.makeAnalysis(doc,'Analysis')",
-    "after": [],
-    "next": [],
-    "note": "Every FEM object is created by an ObjectsFem.makeX(doc, name) factory, then added: analysis.addObject(obj). The order below IS the required order - skipping a step gives a silent empty result."
-   },
-   {
-    "id": "FEM_Analysis",
-    "py": "analysis = ObjectsFem.makeAnalysis(doc,'Analysis'); FemGui.setActiveAnalysis(analysis)",
-    "after": [
-     "a solid"
-    ],
-    "next": [
-     "FEM_SolverCalculiX",
-     "FEM_MaterialSolid"
-    ],
-    "note": "Container for the whole study. setActiveAnalysis is required before any GUI FEM command."
-   },
-   {
-    "id": "FEM_SolverCalculiX",
-    "py": "solver = ObjectsFem.makeSolverCalculiX(doc,'Solver'); analysis.addObject(solver); solver.AnalysisType='static'; solver.GeometricalNonlinearity='linear'",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [
-     "FEM_MaterialSolid"
-    ],
-    "note": "AnalysisType: static, frequency, thermomech, buckling, check. Alternatives: makeSolverElmer (multiphysics/EM/CFD), makeSolverZ88, makeSolverMystran."
-   },
-   {
-    "id": "FEM_MaterialSolid",
-    "py": "mat = ObjectsFem.makeMaterialSolid(doc,'Material'); analysis.addObject(mat); m = mat.Material; m['Name']='Steel'; m['YoungsModulus']='210000 MPa'; m['PoissonRatio']='0.30'; m['Density']='7900 kg/m^3'; mat.Material = m",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [
-     "FEM_ConstraintFixed"
-    ],
-    "note": "mat.Material is a dict that must be reassigned wholesale - editing in place does nothing. Values are unit strings. Leave References empty to apply to everything."
-   },
-   {
-    "id": "FEM_MaterialFluid",
-    "py": "ObjectsFem.makeMaterialFluid(doc,'FluidMaterial')",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [],
-    "note": "CFD only. Also makeMaterialMechanicalNonlinear (plasticity), makeMaterialReinforced (concrete)."
-   },
-   {
-    "id": "FEM_ConstraintFixed",
-    "py": "fix = ObjectsFem.makeConstraintFixed(doc,'Fixed'); analysis.addObject(fix); fix.References = [(body,'Face1')]",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [
-     "FEM_ConstraintForce"
-    ],
-    "note": "At least one fixed (or displacement) constraint is mandatory - without it the model is unrestrained and the solve diverges."
-   },
-   {
-    "id": "FEM_ConstraintDisplacement",
-    "py": "d = ObjectsFem.makeConstraintDisplacement(doc,'Disp'); d.References=[(body,'Face2')]; d.xFix=True; d.zFree=False; d.zDisplacement=-1",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [],
-    "note": "Prescribed motion, or partial restraint (symmetry planes)."
-   },
-   {
-    "id": "FEM_ConstraintForce",
-    "py": "f = ObjectsFem.makeConstraintForce(doc,'Force'); analysis.addObject(f); f.References=[(body,'Face2')]; f.Force='100 N'; f.Reversed=False",
-    "after": [
-     "FEM_ConstraintFixed"
-    ],
-    "next": [
-     "FEM_MeshGmshFromShape"
-    ],
-    "note": "Total force spread over the referenced faces, not per-face."
-   },
-   {
-    "id": "FEM_ConstraintPressure",
-    "py": "p = ObjectsFem.makeConstraintPressure(doc,'Pressure'); p.References=[(body,'Face3')]; p.Pressure='0.1 MPa'; p.Reversed=False",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": []
-   },
-   {
-    "id": "FEM_ConstraintSelfWeight",
-    "py": "ObjectsFem.makeConstraintSelfWeight(doc,'Gravity')",
-    "after": [
-     "FEM_MaterialSolid"
-    ],
-    "next": [],
-    "note": "Needs Density set on the material."
-   },
-   {
-    "id": "FEM_ConstraintCentrif",
-    "py": "ObjectsFem.makeConstraintCentrif(doc,'Centrif')",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [],
-    "note": "Rotating parts - flywheels, impellers."
-   },
-   {
-    "id": "FEM_ConstraintContact",
-    "py": "ObjectsFem.makeConstraintContact(doc,'Contact')",
-    "after": [
-     "2 touching solids"
-    ],
-    "next": [],
-    "note": "Expensive and fragile. Use makeConstraintTie for bonded (glued) interfaces instead - far more robust."
-   },
-   {
-    "id": "FEM_ConstraintTemperature",
-    "py": "t = ObjectsFem.makeConstraintTemperature(doc,'Temp'); t.References=[(body,'Face1')]; t.Temperature='373 K'",
-    "after": [
-     "thermomech solver"
-    ],
-    "next": [
-     "FEM_ConstraintHeatflux"
-    ],
-    "note": "Thermal chain: makeConstraintTemperature, makeConstraintHeatflux, makeConstraintBodyHeatSource, makeConstraintInitialTemperature."
-   },
-   {
-    "id": "FEM_ConstraintSpring",
-    "py": "ObjectsFem.makeConstraintSpring(doc,'Spring')",
-    "after": [
-     "FEM_Analysis"
-    ],
-    "next": [],
-    "note": "Elastic foundation. Also makeConstraintRigidBody, makeConstraintTransform (cylindrical/local coords), makeConstraintPlaneRotation, makeConstraintSectionPrint."
-   },
-   {
-    "id": "FEM_ElementGeometry2D",
-    "py": "ObjectsFem.makeElementGeometry2D(doc, 2.0, 'ShellThickness')",
-    "after": [
-     "a face/shell body"
-    ],
-    "next": [],
-    "note": "Shell thickness for 2D meshes. makeElementGeometry1D for beam cross-sections, makeElementRotation1D for beam orientation, makeElementFluid1D for pipe networks."
-   },
-   {
-    "id": "FEM_MeshGmshFromShape",
-    "py": "mesh = ObjectsFem.makeMeshGmsh(doc,'Mesh'); mesh.Shape = body; mesh.CharacteristicLengthMax='5 mm'; mesh.ElementOrder='2nd'; analysis.addObject(mesh); import femmesh.gmshtools as gt; gt.GmshTools(mesh).create_mesh()",
-    "after": [
-     "constraints defined"
-    ],
-    "next": [
-     "FEM_SolverRun"
-    ],
-    "note": "Requires gmsh on PATH. create_mesh() returns an error string ('' = success). ElementOrder '2nd' is almost always what you want for stress accuracy. Check mesh.FemMesh.NodeCount > 0 before solving."
-   },
-   {
-    "id": "FEM_MeshNetgenFromShape",
-    "py": "ObjectsFem.makeMeshNetgen(doc,'Mesh')",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "Built-in, no external binary. Less control than gmsh."
-   },
-   {
-    "id": "FEM_MeshRegion",
-    "py": "r = ObjectsFem.makeMeshRegion(doc, mesh, 1.0, 'Refinement'); r.References=[(body,'Face5')]",
-    "after": [
-     "FEM_MeshGmshFromShape"
-    ],
-    "next": [],
-    "note": "Local refinement at stress concentrations. Also makeMeshBoundaryLayer (CFD), makeMeshTransfiniteVolume (structured)."
-   },
-   {
-    "id": "FEM_MeshGroup",
-    "py": "ObjectsFem.makeMeshGroup(doc, mesh)",
-    "after": [
-     "a mesh"
-    ],
-    "next": [],
-    "note": "Named node/element sets exported to the solver deck."
-   },
-   {
-    "id": "FEM_SolverRun",
-    "py": "from femtools import ccxtools; fea = ccxtools.FemToolsCcx(analysis, solver); fea.update_objects(); fea.setup_working_dir(); fea.check_prerequisites(); fea.write_inp_file(); fea.ccx_run(); fea.load_results()",
-    "after": [
-     "mesh + material + constraints"
-    ],
-    "next": [
-     "FEM_PostPipelineFromResult"
-    ],
-    "note": "check_prerequisites() returns a message string - if non-empty, STOP and report it; it names exactly what is missing. This is the best diagnostic in the whole FEM module."
-   },
-   {
-    "id": "FEM_ResultShow",
-    "py": "res = [o for o in analysis.Group if o.isDerivedFrom('Fem::FemResultObject')][0]; print(max(res.vonMises), max(res.DisplacementLengths))",
-    "after": [
-     "FEM_SolverRun"
-    ],
-    "next": [
-     "FEM_PostPipelineFromResult"
-    ],
-    "note": "Result fields: vonMises, DisplacementVectors, DisplacementLengths, MaxShear, PrincipalMax/Med/Min, Temperature, ReinforcementRatio. Compare max(vonMises) to the material yield to answer 'will it hold'."
-   },
-   {
-    "id": "FEM_PostPipelineFromResult",
-    "py": "pipe = ObjectsFem.makePostVtkResult(doc, [res], 'Pipeline')",
-    "after": [
-     "FEM_ResultShow"
-    ],
-    "next": [
-     "FEM_PostFilterClipScalar"
-    ],
-    "note": "Post-processing pipeline; filters attach to it: makePostVtkFilterClipRegion, ClipScalar, CutFunction, Warp, Contours, makePostFilterGlyph."
-   },
-   {
-    "id": "FEM_PostLineplot",
-    "py": "ObjectsFem.makePostLineplot(doc,'Lineplot')",
-    "after": [
-     "FEM_PostPipelineFromResult"
-    ],
-    "next": [],
-    "note": "Data along a line. Also makePostHistogram, makePostTable for numeric extraction."
-   },
-   {
-    "id": "FEM_ResultsPurge",
-    "py": "Gui.runCommand('FEM_ResultsPurge',0)",
-    "after": [
-     "results"
-    ],
-    "next": [
-     "FEM_SolverRun"
-    ],
-    "note": "Clear before re-running or old results are silently kept."
-   },
-   {
-    "id": "FEM_Examples",
-    "py": "Gui.runCommand('FEM_Examples',0)",
-    "after": [],
-    "next": [],
-    "note": "Working reference models for every analysis type - the fastest way to learn a correct setup."
-   }
-  ],
-  "Mesh_and_IO": [
-   {
-    "id": "Mesh_Import",
-    "py": "import Mesh; Mesh.insert('/path/f.stl', doc.Name)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Mesh_Evaluate",
-     "Part_ShapeFromMesh"
-    ],
-    "note": "STL, OBJ, PLY, 3MF, AMF, OFF."
-   },
-   {
-    "id": "Mesh_Export",
-    "py": "Mesh.export([obj], '/path/out.stl')",
-    "after": [
-     "a solid or mesh"
-    ],
-    "next": [],
-    "note": "Works directly on a solid - it tessellates automatically. For print quality set the tessellation first via a Mesh_FromPartShape."
-   },
-   {
-    "id": "Mesh_FromPartShape",
-    "py": "m = doc.addObject('Mesh::Feature','Mesh'); m.Mesh = MeshPart.meshFromShape(Shape=body.Shape, LinearDeflection=0.1, AngularDeflection=0.5, Relative=False)",
-    "after": [
-     "a solid"
-    ],
-    "next": [
-     "Mesh_Export"
-    ],
-    "note": "import MeshPart. LinearDeflection controls print fidelity - 0.01-0.1 mm for FDM. This is the correct STL export path."
-   },
-   {
-    "id": "Mesh_Evaluate",
-    "py": "print(m.Mesh.isSolid(), m.Mesh.hasNonManifolds(), m.Mesh.hasSelfIntersections(), m.Mesh.CountFacets)",
-    "after": [
-     "a mesh"
-    ],
-    "next": [
-     "Mesh_Harmonize"
-    ],
-    "note": "Run before exporting for print. m.Mesh.removeNonManifolds(), .removeDuplicatedFacets(), .fixIndices(), .harmonizeNormals() are the repair calls."
-   },
-   {
-    "id": "Mesh_Decimate",
-    "py": "m.Mesh.decimate(0.1, 0.1)",
-    "after": [
-     "a dense mesh"
-    ],
-    "next": []
-   },
-   {
-    "id": "Mesh_Boolean",
-    "py": "result = m1.Mesh.unite(m2.Mesh)  # .intersect(), .difference()",
-    "after": [
-     "2 meshes"
-    ],
-    "next": [],
-    "note": "Mesh booleans are far more forgiving than B-rep booleans on messy scan data."
-   },
-   {
-    "id": "Import_STEP",
-    "py": "import Import; Import.insert('/path/f.step', doc.Name); Import.export([obj],'/path/out.step')",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Part_RefineShape",
-     "PartDesign_ShapeBinder"
-    ],
-    "note": "STEP is the interchange format that preserves solids. Set import prefs via ParamGet('User parameter:BaseApp/Preferences/Mod/Import')."
-   },
-   {
-    "id": "Import_DXF",
-    "py": "import importDXF; importDXF.insert('/path/f.dxf', doc.Name); importDXF.export([obj],'/path/out.dxf')",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Draft_Upgrade",
-     "Draft_Draft2Sketch"
-    ],
-    "note": "Imports as Draft objects. Upgrade then Draft2Sketch to make it parametric."
-   },
-   {
-    "id": "Import_SVG",
-    "py": "import importSVG; importSVG.insert('/path/f.svg', doc.Name)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Draft_Upgrade",
-     "Part_Extrude"
-    ],
-    "note": "Logo-to-3D pipeline: import SVG, Draft.upgrade to faces, Part::Extrusion."
-   },
-   {
-    "id": "Import_Image",
-    "py": "img = doc.addObject('Image::ImagePlane','Image'); img.ImageFile='/path/ref.png'; img.XSize=100; img.YSize=80",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "Sketcher_NewSketch"
-    ],
-    "note": "Trace-over reference in the 3D view."
-   },
-   {
-    "id": "Export_Everything",
-    "py": "obj.Shape.exportStep('/p.step'); obj.Shape.exportBrep('/p.brep'); obj.Shape.exportIges('/p.iges'); obj.Shape.exportStl('/p.stl')",
-    "after": [
-     "a shape"
-    ],
-    "next": [],
-    "note": "Shape-level exporters skip the document layer - the fastest programmatic export."
-   }
-  ],
-  "Material_Measure_Misc": [
-   {
-    "id": "Material_Apply",
-    "py": "obj.ShapeMaterial = <material>  # GUI: Material workbench, or set ViewObject.ShapeAppearance",
-    "after": [
-     "a solid"
-    ],
-    "next": [
-     "FEM_MaterialSolid",
-     "Part_Measure"
-    ],
-    "note": "Assigning a material gives correct Density for mass calculations and drives FEM/BIM takeoffs."
-   },
-   {
-    "id": "Measure_Distance",
-    "py": "obj.Shape.distToShape(other.Shape)  # -> (dist, [(pt1,pt2)], [info])",
-    "after": [
-     "2 shapes"
-    ],
-    "next": []
-   },
-   {
-    "id": "Measure_Mass",
-    "py": "v = obj.Shape.Volume; mass = v * density_kg_per_mm3; c = obj.Shape.CenterOfMass",
-    "after": [
-     "a solid"
-    ],
-    "next": [],
-    "note": "Volume is mm^3. Steel ~7.9e-6 kg/mm^3. CenterOfMass and MatrixOfInertia answer most engineering questions without a workbench."
-   },
-   {
-    "id": "Measure_BoundingBox",
-    "py": "bb = obj.Shape.BoundBox; print(bb.XLength, bb.YLength, bb.ZLength)",
-    "after": [
-     "a shape"
-    ],
-    "next": [],
-    "note": "Instant 'will it fit in the printer' check."
-   },
-   {
-    "id": "Std_ViewFit",
-    "py": "Gui.SendMsgToActiveView('ViewFit'); Gui.activeDocument().activeView().viewAxonometric()",
-    "after": [
-     "a GUI session"
-    ],
-    "next": [
-     "Std_ViewScreenShot"
-    ],
-    "note": "Also viewFront/viewTop/viewRight/viewIsometric."
-   },
-   {
-    "id": "Std_ViewScreenShot",
-    "py": "Gui.activeDocument().activeView().saveImage('/path/shot.png', 1920, 1080, 'White')",
-    "after": [
-     "a GUI session"
-    ],
-    "next": [],
-    "note": "THE way for an AI to see its own work. Take a screenshot after every significant step and check it."
-   },
-   {
-    "id": "Std_Visibility",
-    "py": "obj.ViewObject.Visibility = False; obj.ViewObject.ShapeColor=(0.8,0.2,0.2); obj.ViewObject.Transparency=50",
-    "after": [
-     "an object"
-    ],
-    "next": []
-   },
-   {
-    "id": "Std_SelectionGet",
-    "py": "sel = Gui.Selection.getSelectionEx(); sub = sel[0].SubElementNames",
-    "after": [
-     "a GUI session"
-    ],
-    "next": [],
-    "note": "How to learn what the user is pointing at. getCompleteSelection() includes sub-elements across documents."
-   },
-   {
-    "id": "Std_DependencyGraph",
-    "py": "obj.OutList  # what it depends on;  obj.InList  # what depends on it",
-    "after": [
-     "objects"
-    ],
-    "next": [],
-    "note": "Traverse the model programmatically. doc.Objects, doc.getObject(name), doc.getObjectsByLabel(label)."
-   },
-   {
-    "id": "Std_Macro",
-    "py": "open('/home/user/.local/share/FreeCAD/Macro/x.FCMacro','w').write(code)",
-    "after": [],
-    "next": [],
-    "note": "Persisting generated scripts. Macro dir: App.getUserMacroDir(True)."
-   },
-   {
-    "id": "Std_Parameters",
-    "py": "p = App.ParamGet('User parameter:BaseApp/Preferences/Mod/Part'); p.SetFloat('MeshDeviation', 0.1)",
-    "after": [],
-    "next": [],
-    "note": "All settings are here. Read before writing; changes are immediate and persistent."
-   },
-   {
-    "id": "CAM_Job",
-    "py": "Gui.activateWorkbench('CAMWorkbench')  # then CAM_Job, CAM_Profile, CAM_Pocket, CAM_Drilling, CAM_PostProcess",
-    "after": [
-     "a finished solid"
-    ],
-    "next": [],
-    "note": "Chain: Job (pick model + stock + tool table) -> ToolBitLibrary -> operations (Profile/Pocket/Adaptive/Drilling/Surface) -> Simulator -> PostProcess to G-code."
-   },
-   {
-    "id": "BIM_Wall",
-    "py": "import Arch; Arch.makeWall(baseline, length=5000, width=200, height=3000)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [],
-    "note": "Arch/BIM chain: makeSite -> makeBuilding -> makeFloor -> makeWall/makeStructure -> makeWindow (needs a wall host) -> makeSectionPlane -> TechDraw. Arch.makeIfcProject for IFC export."
-   },
-   {
-    "id": "Surface_Filling",
-    "py": "doc.addObject('Surface::Filling','Surface')",
-    "after": [
-     "boundary edges"
-    ],
-    "next": [
-     "Part_MakeSolid"
-    ],
-    "note": "Surface workbench: Filling, GeomFillSurface, Sections, Curve on mesh, Blend curve. For organic shapes B-rep primitives cannot make."
-   },
-   {
-    "id": "Points_Import",
-    "py": "import Points; Points.insert('/path/cloud.asc', doc.Name)",
-    "after": [
-     "Std_New"
-    ],
-    "next": [
-     "ReverseEngineering_Approximate"
-    ],
-    "note": "Point clouds; ReverseEngineering workbench fits surfaces to them."
-   }
+  },
+  "predecessor_index": {
+    "note": "Inverse lookup: 'to run X, you first need Y'. Answers 'why did this command grey out / fail'.",
+    "any PartDesign feature": "an active PartDesign::Body",
+    "PartDesign_Pad / Pocket / Revolution / Groove": "a closed, non-self-intersecting sketch (or a face)",
+    "PartDesign_Pocket / any subtractive": "an existing solid in the body (the first feature must be additive)",
+    "PartDesign_Fillet / Chamfer / Draft / Thickness": "a solid, and specific Edge/Face names that survive recompute",
+    "PartDesign_LinearPattern / PolarPattern / Mirrored": "at least one feature to transform",
+    "PartDesign_Hole": "a sketch containing circles, positioned on a face",
+    "Sketcher constraints": "geometry already added, referenced by its returned index",
+    "Sketcher_Projection (external geometry)": "the sketch attached to something near the target geometry",
+    "Part booleans": "two shapes that actually overlap (or the result is empty, not an error)",
+    "Draft anything": "the working plane set",
+    "Draft_Upgrade to a face": "a closed wire",
+    "Assembly joints": "components inserted AND one grounded",
+    "Assembly_SolveAssembly": "at least one joint",
+    "TechDraw views": "a page with a template",
+    "TechDraw dimensions": "a view that has actually rendered (KeepUpdated + recompute)",
+    "FEM meshing": "gmsh installed and on PATH",
+    "FEM_SolverRun": "mesh + material + at least one fixed constraint + at least one load",
+    "Mesh_Export at print quality": "an explicit Mesh_FromPartShape with a chosen deflection"
+  },
+  "failure_playbook": {
+    "nothing changed after my edit": "doc.recompute(). Then check obj.State for 'Touched'/'Invalid'.",
+    "Pad failed / no solid": "sk.solve()!=0, or the profile is open or self-intersecting. Check sk.OpenVertices and sk.Shape.Wires.",
+    "'Result has multiple solids'": "The sketch has disjoint regions, or the feature does not touch the existing body. Split into separate bodies + Part_Fuse.",
+    "Fillet/Chamfer fails": "Part_RefineShape the input; reduce the radius below the smallest adjacent feature; apply fillets earlier in the tree.",
+    "Feature moved to the wrong place after an edit": "Topological naming. Replace face references with a PartDesign_Plane datum and re-attach the sketch.",
+    "Sketch is over-constrained": "Check sk.RedundantConstraints / ConflictingConstraints / PartiallyRedundantConstraints; delete in DESCENDING index order.",
+    "Sketch will not fully constrain": "sk.FullyConstrained is False - find the free DOF with Sketcher_SelectElementsWithDoFs; usually the profile is not pinned to the origin.",
+    "Boolean produced nothing": "The shapes do not overlap. Check obj.Shape.BoundBox and Placement.",
+    "Imported STEP is one dumb solid": "Expected. Use PartDesign_SubShapeBinder to reference it, or Part_Defeaturing to strip features.",
+    "TechDraw page is blank": "page.KeepUpdated = True; then doc.recompute().",
+    "TechDraw dimension attaches to the wrong edge": "TechDraw sub-elements are 0-indexed (Edge0), the 3D model's are 1-indexed (Edge1).",
+    "Assembly parts fly apart": "Nothing is grounded, or a joint is over-constrained. Ground one part, then add joints one at a time and solve after each.",
+    "FEM solve produced no result": "fea.check_prerequisites() - it names the missing piece. Usually no fixed constraint or an empty mesh (mesh.FemMesh.NodeCount == 0).",
+    "FEM results look absurd": "Units. YoungsModulus in MPa with force in N and length in mm is the consistent set.",
+    "GUI command did nothing": "Wrong workbench, or the selection/active object was not what the command expects. Prefer the 'py' form.",
+    "Fillet/Chamfer ran with no error but nothing changed": "Base is self-referencing: body.Tip was read after newObject() created the feature. Capture the tip first.",
+    "'X' is not a document object type": "A property type was passed to addObject. Objects are App::VarSet, PartDesign::Body, Spreadsheet::Sheet; App::PropertyLength / App::PropertyLink are properties and belong in obj.addProperty(...).",
+    "parametric dimensions / one place to edit sizes": "App::VarSet (1.0+) or a Spreadsheet. VarSet_Create -> VarSet_AddProperty -> setExpression on the feature or on Constraints.<name>."
+  },
+  "agent_playbook": [
+    "Plan the whole feature tree before creating anything. Rework is expensive because features depend on names.",
+    "Use the 'py' column, not Gui.runCommand, wherever both exist. Scripted calls are deterministic; GUI commands depend on hidden selection state.",
+    "One doc.openTransaction / commitTransaction per logical step, so a bad step is one undo away.",
+    "recompute + check State after every feature, not at the end. Find the failing feature immediately.",
+    "Sketch on origin planes and datum planes. Only reference model faces when the model is finished and will not change.",
+    "Name things: obj.Label = 'MountingHole'. Name sketch constraints. A readable tree is a maintainable tree.",
+    "Constrain geometrically first (coincident, horizontal, tangent, equal, symmetric), dimension last. Fewer dimensions = a more robust sketch.",
+    "Put every driving number in a Spreadsheet with aliases from the start. Retrofitting expressions is tedious.",
+    "Verify visually: Gui.activeDocument().activeView().saveImage(path, 1920, 1080, 'White') and look at it.",
+    "Verify numerically: Shape.isValid(), len(Shape.Solids)==1, Shape.Volume, Shape.BoundBox against the intent.",
+    "Dress-up features (fillet, chamfer, draft, thickness) go last in the tree and are the first thing to remove when a rebuild breaks."
   ]
- },
- "flow_tree": {
-  "note": "Read '>' as 'is normally followed by'. Branches in [] are alternatives. This is the spine an agent should plan against.",
-  "root": "Std_New > { PartDesign | Part | Draft | Assembly | Spreadsheet }",
-  "mechanical_part": [
-   "Std_New > PartDesign_Body > PartDesign_NewSketch(on XY/XZ/YZ_Plane)",
-   "  > Sketcher geometry > Sketcher geometric constraints > Sketcher dimensional constraints > Sketcher_ValidateSketch",
-   "  > PartDesign_Pad [ | PartDesign_Revolution | PartDesign_AdditiveLoft | PartDesign_AdditivePipe | PartDesign_AdditiveHelix ]",
-   "  > PartDesign_NewSketch(on a face or a PartDesign_Plane) > PartDesign_Pocket [ | PartDesign_Hole | PartDesign_Groove ]",
-   "  > PartDesign_LinearPattern [ | PartDesign_PolarPattern | PartDesign_Mirrored ]",
-   "  > PartDesign_Fillet > PartDesign_Chamfer   (dress-up features LAST)",
-   "  > Std_Save > { TechDraw_PageDefault | Mesh_FromPartShape | Import_STEP export | Assembly_Insert }"
-  ],
-  "parametric_part": [
-   "Spreadsheet_CreateSheet > Spreadsheet_Set > Spreadsheet_SetAlias",
-   "  > (build the body as above, but) Sketcher_ChangeDimensionConstraint driven by Spreadsheet_UseInExpression",
-   "  > change one cell > Std_Refresh > whole model updates"
-  ],
-  "csg_part": [
-   "Std_New > Part_Box [ | Part_Primitives ] > Std_Placement",
-   "  > Part_Cut [ | Part_Fuse | Part_Common ] > Part_RefineShape > Part_CheckGeometry",
-   "  > Part_Fillet > Mesh_FromPartShape > Mesh_Export"
-  ],
-  "2d_to_3d": [
-   "Import_SVG [ | Import_DXF | Draft_Wire | Draft_ShapeString ] > Draft_Upgrade(repeat until faces)",
-   "  > { Part_Extrude | Draft_Draft2Sketch > PartDesign_Pad }"
-  ],
-  "assembly": [
-   "(one document per part, saved) > Std_New > Assembly_CreateAssembly",
-   "  > Assembly_Insert (x N) > Assembly_ToggleGrounded (EXACTLY ONE, first)",
-   "  > Assembly_CreateJointFixed [ | Revolute | Slider | Cylindrical | Ball | Distance ] (x N)",
-   "  > Assembly_SolveAssembly > Assembly_SelectComponentsWithDoFs (verify)",
-   "  > { Assembly_CreateBom > TechDraw_SpreadsheetView | Assembly_CreateView | Assembly_CreateSimulation }"
-  ],
-  "drawing": [
-   "(a finished body or assembly) > TechDraw_PageDefault",
-   "  > TechDraw_ProjectionGroup [ | TechDraw_View ] > TechDraw_RedrawPage",
-   "  > TechDraw_SectionView [ | TechDraw_DetailView ] > TechDraw_Hatch",
-   "  > TechDraw_2PointCenterLine > TechDraw_Dimension (x N) > TechDraw_Balloon > TechDraw_Annotation",
-   "  > TechDraw_ExportPageSVG [ | DXF | print PDF ]"
-  ],
-  "simulation": [
-   "(a finished body) > FEM_Analysis > FEM_SolverCalculiX > FEM_MaterialSolid",
-   "  > FEM_ConstraintFixed (mandatory) > FEM_ConstraintForce [ | Pressure | SelfWeight | Temperature ]",
-   "  > FEM_MeshGmshFromShape [ + FEM_MeshRegion ] > FEM_SolverRun",
-   "  > FEM_ResultShow > FEM_PostPipelineFromResult > FEM_PostFilterWarp/Contours",
-   "  > (too high? change a Spreadsheet cell > Std_Refresh > FEM_ResultsPurge > FEM_SolverRun again)"
-  ],
-  "3d_printing": [
-   "(a finished body) > Part_CheckGeometry > Measure_BoundingBox (fits the bed?)",
-   "  > Mesh_FromPartShape(LinearDeflection 0.01-0.1) > Mesh_Evaluate > Mesh_Export('.stl')"
-  ],
-  "machining": [
-   "(a finished body) > CAM_Job > tool table > CAM_Profile/Pocket/Drilling > simulate > CAM_PostProcess"
-  ],
-  "reverse_engineering": [
-   "Mesh_Import [ | Points_Import ] > Mesh_Evaluate > Part_ShapeFromMesh > Part_MakeSolid > Part_RefineShape",
-   "  > (measure it, then remodel it properly in PartDesign - the converted shell is faceted, not parametric)"
-  ]
- },
- "predecessor_index": {
-  "note": "Inverse lookup: 'to run X, you first need Y'. Answers 'why did this command grey out / fail'.",
-  "any PartDesign feature": "an active PartDesign::Body",
-  "PartDesign_Pad / Pocket / Revolution / Groove": "a closed, non-self-intersecting sketch (or a face)",
-  "PartDesign_Pocket / any subtractive": "an existing solid in the body (the first feature must be additive)",
-  "PartDesign_Fillet / Chamfer / Draft / Thickness": "a solid, and specific Edge/Face names that survive recompute",
-  "PartDesign_LinearPattern / PolarPattern / Mirrored": "at least one feature to transform",
-  "PartDesign_Hole": "a sketch containing circles, positioned on a face",
-  "Sketcher constraints": "geometry already added, referenced by its returned index",
-  "Sketcher_Projection (external geometry)": "the sketch attached to something near the target geometry",
-  "Part booleans": "two shapes that actually overlap (or the result is empty, not an error)",
-  "Draft anything": "the working plane set",
-  "Draft_Upgrade to a face": "a closed wire",
-  "Assembly joints": "components inserted AND one grounded",
-  "Assembly_SolveAssembly": "at least one joint",
-  "TechDraw views": "a page with a template",
-  "TechDraw dimensions": "a view that has actually rendered (KeepUpdated + recompute)",
-  "FEM meshing": "gmsh installed and on PATH",
-  "FEM_SolverRun": "mesh + material + at least one fixed constraint + at least one load",
-  "Mesh_Export at print quality": "an explicit Mesh_FromPartShape with a chosen deflection"
- },
- "failure_playbook": {
-  "nothing changed after my edit": "doc.recompute(). Then check obj.State for 'Touched'/'Invalid'.",
-  "Pad failed / no solid": "sk.solve()!=0, or the profile is open or self-intersecting. Check sk.OpenVertices and sk.Shape.Wires.",
-  "'Result has multiple solids'": "The sketch has disjoint regions, or the feature does not touch the existing body. Split into separate bodies + Part_Fuse.",
-  "Fillet/Chamfer fails": "Part_RefineShape the input; reduce the radius below the smallest adjacent feature; apply fillets earlier in the tree.",
-  "Feature moved to the wrong place after an edit": "Topological naming. Replace face references with a PartDesign_Plane datum and re-attach the sketch.",
-  "Sketch is over-constrained": "Check sk.RedundantConstraints / ConflictingConstraints / PartiallyRedundantConstraints; delete in DESCENDING index order.",
-  "Sketch will not fully constrain": "sk.FullyConstrained is False - find the free DOF with Sketcher_SelectElementsWithDoFs; usually the profile is not pinned to the origin.",
-  "Boolean produced nothing": "The shapes do not overlap. Check obj.Shape.BoundBox and Placement.",
-  "Imported STEP is one dumb solid": "Expected. Use PartDesign_SubShapeBinder to reference it, or Part_Defeaturing to strip features.",
-  "TechDraw page is blank": "page.KeepUpdated = True; then doc.recompute().",
-  "TechDraw dimension attaches to the wrong edge": "TechDraw sub-elements are 0-indexed (Edge0), the 3D model's are 1-indexed (Edge1).",
-  "Assembly parts fly apart": "Nothing is grounded, or a joint is over-constrained. Ground one part, then add joints one at a time and solve after each.",
-  "FEM solve produced no result": "fea.check_prerequisites() - it names the missing piece. Usually no fixed constraint or an empty mesh (mesh.FemMesh.NodeCount == 0).",
-  "FEM results look absurd": "Units. YoungsModulus in MPa with force in N and length in mm is the consistent set.",
-  "GUI command did nothing": "Wrong workbench, or the selection/active object was not what the command expects. Prefer the 'py' form.",
-  "Fillet/Chamfer ran with no error but nothing changed": "Base is self-referencing: body.Tip was read after newObject() created the feature. Capture the tip first."
- },
- "agent_playbook": [
-  "Plan the whole feature tree before creating anything. Rework is expensive because features depend on names.",
-  "Use the 'py' column, not Gui.runCommand, wherever both exist. Scripted calls are deterministic; GUI commands depend on hidden selection state.",
-  "One doc.openTransaction / commitTransaction per logical step, so a bad step is one undo away.",
-  "recompute + check State after every feature, not at the end. Find the failing feature immediately.",
-  "Sketch on origin planes and datum planes. Only reference model faces when the model is finished and will not change.",
-  "Name things: obj.Label = 'MountingHole'. Name sketch constraints. A readable tree is a maintainable tree.",
-  "Constrain geometrically first (coincident, horizontal, tangent, equal, symmetric), dimension last. Fewer dimensions = a more robust sketch.",
-  "Put every driving number in a Spreadsheet with aliases from the start. Retrofitting expressions is tedious.",
-  "Verify visually: Gui.activeDocument().activeView().saveImage(path, 1920, 1080, 'White') and look at it.",
-  "Verify numerically: Shape.isValid(), len(Shape.Solids)==1, Shape.Volume, Shape.BoundBox against the intent.",
-  "Dress-up features (fillet, chamfer, draft, thickness) go last in the tree and are the first thing to remove when a rebuild breaks."
- ]
 }

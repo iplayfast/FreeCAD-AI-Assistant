@@ -457,8 +457,21 @@ def delete_object(doc_name: str, obj_name: str) -> dict:
 )
 def execute_code(code: str) -> dict:
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        exec(code, exec_namespace())  # raises on error -> propagated
+    try:
+        with contextlib.redirect_stdout(buf):
+            exec(code, exec_namespace())  # raises on error -> propagated
+    except TypeError as exc:
+        # Confusing a property type for an object type is the single most common
+        # way hand-written FreeCAD code fails, and the message says what is wrong
+        # without saying what to do. The caller reads this string and nothing else.
+        if "not a document object type" in str(exc):
+            raise TypeError(
+                f"{exc}. addObject takes an OBJECT type — 'App::VarSet', "
+                "'PartDesign::Body', 'Spreadsheet::Sheet'. 'App::Property*' are "
+                "PROPERTY types and belong in obj.addProperty(type, name, group, "
+                "doc). Call lookup_freecad_op for the operation you are attempting."
+            ) from None
+        raise
     return {"output": buf.getvalue()}
 
 
