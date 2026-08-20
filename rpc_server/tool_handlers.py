@@ -71,8 +71,12 @@ def list_documents() -> list[str]:
 def create_document(name: str) -> dict:
     doc = FreeCAD.newDocument(name)
     doc.recompute()
-    FreeCAD.Console.PrintMessage(f"Document '{name}' created via tool registry.\n")
-    return {"document_name": name}
+    FreeCAD.Console.PrintMessage(f"Document '{doc.Name}' created via tool registry.\n")
+    # doc.Name, never the requested string. FreeCAD sanitises it — "Bearing 608"
+    # becomes "Bearing_608", "608 Bearing" becomes "_608_Bearing" — and uniquifies
+    # collisions. Handing back what was asked for means every later call names a
+    # document that does not exist. Label is what the user sees and keeps spaces.
+    return {"document_name": doc.Name, "label": doc.Label}
 
 
 @register(
@@ -371,8 +375,21 @@ def create_object(
         analysis=analysis_name,
         properties=properties or {},
     )
+    # What actually appeared, not what was asked for. addObject uniquifies:
+    # asking twice for "Race" gives "Race" and then "Race001", and reporting
+    # "Race" both times sends every later call to the first object — which does
+    # not fail, it silently edits the wrong one. Diffing around the call is the
+    # only reliable way, since create_object_gui does not hand the object back.
+    doc = _doc(doc_name)
+    before = {o.Name for o in doc.Objects}
     create_object_gui(doc_name, obj)  # returns True or raises
-    return {"object_name": obj_name}
+    added = [o for o in doc.Objects if o.Name not in before]
+    made = next((o for o in added if o.Name == obj_name), None) or (
+        added[-1] if added else doc.getObject(obj_name))
+    if made is None:
+        return {"object_name": obj_name}
+    return {"object_name": made.Name, "label": made.Label,
+            **({"renamed_from": obj_name} if made.Name != obj_name else {})}
 
 
 @register(
@@ -394,8 +411,8 @@ def edit_object(doc_name: str, obj_name: str, properties: dict) -> dict:
         raise ValueError(f"Object '{obj_name}' not found in document '{doc_name}'.")
     set_object_property(doc, obj, properties)  # raises on failure
     doc.recompute()
-    FreeCAD.Console.PrintMessage(f"Object '{obj_name}' updated via tool registry.\n")
-    return {"object_name": obj_name}
+    FreeCAD.Console.PrintMessage(f"Object '{obj.Name}' updated via tool registry.\n")
+    return {"object_name": obj.Name, "label": obj.Label}
 
 
 @register(
@@ -832,6 +849,27 @@ def demo() -> None:
         ], graph["Sketch"]["DependsOn"]
 
         assert get_dependency_graph("_no_such_document_") == []
+        # Names reported must be the names FreeCAD actually made, or every later
+        # call addresses something else — or, worse, addresses the wrong object
+        # and succeeds.
+        made = create_object(doc.Name, "Part::Box", "Race")
+        again = create_object(doc.Name, "Part::Box", "Race")
+        assert made["object_name"] == "Race", made
+        assert again["object_name"] == "Race001", again
+        assert again["renamed_from"] == "Race", again
+        assert doc.getObject("Race001") is not None
+        assert doc.getObject(made["object_name"]) is not doc.getObject(again["object_name"])
+        assert edit_object(doc.Name, "Race001", {"Length": 7})["object_name"] == "Race001"
+
+        spaced = create_document("Demo Doc Name")
+        try:
+            # A space is not legal in an internal name; the Label keeps it.
+            assert spaced["document_name"] == "Demo_Doc_Name", spaced
+            assert spaced["label"] == "Demo Doc Name", spaced
+            assert spaced["document_name"] in FreeCAD.listDocuments()
+        finally:
+            FreeCAD.closeDocument(spaced["document_name"])
+
         print("tool_handlers demo: all checks passed")
     finally:
         FreeCAD.closeDocument(doc.Name)
