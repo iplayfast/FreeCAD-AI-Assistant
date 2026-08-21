@@ -94,6 +94,23 @@ def _obj_in_body(doc, name: str, kind: str | None, body):
     return obj
 
 
+def _segment_key_from(a, b) -> tuple:
+    """An order-independent identity for a line between two points.
+
+    Rounded to a micrometre because a model re-deriving the same corner rarely
+    reproduces the same float, and undirected because drawing the same wall
+    backwards is still the same wall.
+    """
+    ends = tuple(sorted(((round(a.x, 3), round(a.y, 3)), (round(b.x, 3), round(b.y, 3)))))
+    return ends
+
+
+def _segment_key(geometry) -> tuple:
+    """``_segment_key_from`` for an existing sketch element; () if not a line."""
+    start, end = getattr(geometry, "StartPoint", None), getattr(geometry, "EndPoint", None)
+    return _segment_key_from(start, end) if start and end else ()
+
+
 def _state(body) -> dict:
     """Validity and volume, so a caller sees a broken feature where it happened.
 
@@ -297,6 +314,23 @@ def sketch_polygon(doc_name: str, sketch_name: str, points: list,
     pts = [FreeCAD.Vector(float(p["x"]), float(p["y"]), 0.0) for p in points]
     if len(pts) < 2:
         raise ValueError("sketch_polygon needs at least two points.")
+    # Refuse an outline this sketch already has. Watched live: a model added the
+    # same nine-segment profile three times, was told "ok, geometry_count 27"
+    # each time, and never learned that the sketch could no longer pad — three
+    # outlines lying on each other are self-intersecting, and pad fails much
+    # later with an error about the shape rather than about the duplicate.
+    existing = {_segment_key(g) for g in sk.Geometry}
+    wanted = {_segment_key_from(pts[i], pts[i + 1]) for i in range(len(pts) - 1)}
+    if closed and len(pts) > 2:
+        wanted.add(_segment_key_from(pts[-1], pts[0]))
+    already = wanted & existing
+    if already:
+        raise ValueError(
+            f"Sketch '{sk.Name}' already contains {len(already)} of these "
+            f"{len(wanted)} segments — this outline is already there. Adding it "
+            "again would stack duplicate geometry, which cannot be padded. Read "
+            "it back with get_sketch_geometry, and pad what is there."
+        )
     idx = _helpers()["addPolygon"](sk, pts, closed=closed, constrain=constrain)
     doc.recompute()
     return {"sketch_name": sk.Name, "geometry_indices": list(idx),
@@ -446,3 +480,95 @@ def create_cylinder(doc_name: str, body_name: str, radius: float, height: float,
     f = _helpers()["createCylinder"](body, radius, height, name=name, x=x, y=y, z=z)
     doc.recompute()
     return {"feature_name": f.Name, "failed": "Invalid" in f.State, **_state(body)}
+
+
+def demo() -> None:
+    """Build a small part through the tools, in a scratch document, then discard it.
+
+    Needs FreeCAD: ``freecadcmd run_checks.py``. These are the tools an agent
+    actually drives, and until this existed nothing exercised them as tools —
+    only the helpers underneath, which is not where the arguments get checked.
+    """
+    from rpc_server.tools import call_tool
+
+    doc_name = call_tool("create_document", {"name": "PartDesignDemo"})["document_name"]
+    doc_obj = FreeCAD.getDocument(doc_name)
+    try:
+        call_tool("create_body", {"doc_name": doc_name, "name": "Plate"})
+        call_tool("create_sketch", {"doc_name": doc_name, "body_name": "Plate",
+                                    "name": "Profile", "plane": "XY_Plane"})
+        outline = [{"x": 0, "y": 0}, {"x": 60, "y": 0}, {"x": 60, "y": 40}, {"x": 0, "y": 40}]
+        added = call_tool("sketch_polygon", {"doc_name": doc_name,
+                                             "sketch_name": "ProfileSketch", "points": outline})
+        assert added["geometry_count"] == 4, added
+
+        # The failure this whole check exists for: the same outline added again
+        # used to answer "ok, geometry_count 8", leaving a sketch that can never
+        # pad and a model with no way to know.
+        for repeat in (outline, list(reversed(outline))):   # winding does not matter
+            try:
+                call_tool("sketch_polygon", {"doc_name": doc_name,
+                                             "sketch_name": "ProfileSketch", "points": repeat})
+                raise AssertionError("a duplicate outline must be refused")
+            except ValueError as exc:
+                assert "already there" in str(exc), exc
+
+        # A genuinely different outline is still fine.
+        inner = [{"x": 5, "y": 5}, {"x": 20, "y": 5}, {"x": 20, "y": 20}]
+        assert call_tool("sketch_polygon", {"doc_name": doc_name,
+                                            "sketch_name": "ProfileSketch",
+                                            "points": inner})["geometry_count"] == 7
+
+        padded = call_tool("pad", {"doc_name": doc_name, "body_name": "Plate",
+                                   "sketch_name": "ProfileSketch", "length": 5})
+        assert not padded["failed"] and padded["solids"] >= 1, padded
+
+        # Parametric means the dimension is DRIVEN, not merely correct once.
+        call_tool("create_varset", {"doc_name": doc_name, "variables": {"Thickness": 9}})
+        bound = call_tool("bind_expression", {"doc_name": doc_name, "obj_name": padded["feature_name"],
+                                              "property": "Length", "expression": "Vars.Thickness"})
+        assert bound["value"] == 9, bound
+        call_tool("set_variables", {"doc_name": doc_name, "variables": {"Thickness": 12}})
+        assert abs(doc_obj.getObject(padded["feature_name"]).Length.Value - 12) < 1e-6, \
+            "changing the variable must rebuild the feature"
+
+    finally:
+        FreeCAD.closeDocument(doc_name)
+
+    print("partdesign_handlers demo: all checks passed", flush=True)
+
+
+@register(
+    "bind_expression",
+    "Drive an object's dimension from a VarSet expression, so changing the "
+    "variable rebuilds the model. This is what makes a document parametric "
+    "rather than merely built to the right size: bind_expression(obj_name='Pad', "
+    "property='Length', expression='Vars.Width'). On a sketch, `property` may be "
+    "the NAME of a dimensional constraint. Use the expression_paths create_varset "
+    "returned; do not assemble a path by hand.",
+    {
+        "type": "object",
+        "properties": {
+            "doc_name": _DOC,
+            "obj_name": {"type": "string",
+                         "description": "Object whose property is being driven, e.g. 'Pad'."},
+            "property": {"type": "string",
+                         "description": "Property or named constraint, e.g. 'Length', 'Radius'."},
+            "expression": {"type": "string",
+                           "description": "FreeCAD expression, e.g. 'Vars.Width' or 'Vars.Bore / 2'."},
+        },
+        "required": ["doc_name", "obj_name", "property", "expression"],
+    },
+)
+def bind_expression(doc_name: str, obj_name: str, property: str, expression: str) -> dict:
+    # The helper has existed since the beginning, reachable only from inside
+    # execute_code — while the system prompt asked for a PARAMETRIC document.
+    # So the one operation that makes a document parametric was the one thing a
+    # model had to write Python for, and a watched run spent 16 of 30 calls in
+    # execute_code doing exactly that, failing 10 of them.
+    doc = _doc(doc_name)
+    obj = _obj(doc, obj_name)
+    value = _helpers()["bindExpression"](obj, property, expression)
+    doc.recompute()
+    return {"object_name": obj.Name, "property": property,
+            "expression": expression, "value": value}

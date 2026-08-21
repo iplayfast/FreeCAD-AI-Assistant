@@ -29,6 +29,7 @@ MODULES = (
     "rpc_server.agent",
     "rpc_server.build_helpers",
     "rpc_server.tool_handlers",
+    "rpc_server.partdesign_handlers",
     "rpc_server.inspect_handlers",
     "rpc_server.bim_handlers",
     "rpc_server.console",
