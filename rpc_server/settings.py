@@ -59,5 +59,10 @@ def save_settings(settings):
     try:
         with open(path, "w") as f:
             json.dump(settings, f, indent=2)
+        # This file holds ai_api_key. The default umask leaves it 0644/0664, so
+        # a provider key pasted into the panel becomes readable by every account
+        # on the machine. Chmod after writing rather than before: the file may
+        # already exist from an older version with the wrong mode.
+        os.chmod(path, 0o600)
     except Exception as e:
         FreeCAD.Console.PrintError(f"Failed to save MCP settings: {e}\n")

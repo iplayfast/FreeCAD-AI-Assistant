@@ -210,7 +210,18 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
     load_handlers()
     tool = _REGISTRY.get(name)
     if tool is None:
-        raise KeyError(f"unknown tool: {name!r}")
+        # An agent on the XML-RPC fallback has just been told describe_tools()
+        # exists, and reaches for it the only way it has been shown anything —
+        # through call_tool. "unknown tool" is true and useless; the near miss
+        # is worth naming, and so is the rest of the registry.
+        hint = ""
+        if name in ("describe_tools", "list_tools", "tools"):
+            hint = (" — that is an XML-RPC method, not a tool: call "
+                    "fc.describe_tools() directly on the server proxy.")
+        elif _REGISTRY:
+            close = [n for n in _REGISTRY if name in n or n in name]
+            hint = f" — did you mean {', '.join(sorted(close)[:4])}?" if close else ""
+        raise KeyError(f"unknown tool: {name!r}{hint}")
 
     args = dict(arguments or {})
     accepted = tool.parameters.get("properties", {})
@@ -400,6 +411,20 @@ def demo() -> None:
             assert False, "expected KeyError for unknown tool"
         except KeyError:
             pass
+
+        # describe_tools is an XML-RPC method, and an agent on the RPC fallback
+        # reaches for it through call_tool: say where it actually lives.
+        try:
+            call_tool("describe_tools", {})
+            assert False, "expected KeyError"
+        except KeyError as e:
+            assert "fc.describe_tools()" in str(e), e
+        # A near miss names the real one rather than just saying no.
+        try:
+            call_tool("ech", {})
+            assert False, "expected KeyError"
+        except KeyError as e:
+            assert "did you mean echo" in str(e), e
 
         # duplicate registration rejected
         try:

@@ -167,9 +167,13 @@ def _auto_start_rpc():
     import FreeCAD
 
     try:
+        # From the module that owns it, not through rpc_server: reaching it via
+        # rpc_server only ever worked because that module happened to import it,
+        # so pruning an unused import there broke auto-start from here.
         from rpc_server import rpc_server
+        from rpc_server.settings import load_settings
 
-        if not rpc_server.load_settings().get("auto_start_rpc", False):
+        if not load_settings().get("auto_start_rpc", False):
             return
         FreeCAD.Console.PrintMessage(f"[AI] {rpc_server.start_rpc_server()}\n")
     except Exception as e:

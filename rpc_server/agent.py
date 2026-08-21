@@ -102,13 +102,33 @@ def select_tools(provider, user_text: str, tools: list = None) -> list:
     return picked if len(picked) > len(ALWAYS_SELECTED) else tools
 
 
+# A tool result is not a one-off cost: it stays in ``messages`` and is re-sent on
+# every later step of the turn. get_objects on a 17-object document serialises to
+# ~45,000 characters — more than this addon's entire 49-tool schema — so one
+# incurious call evicts the briefing, the user's request and every earlier
+# result from a small model's window, and the run goes strange for reasons
+# nothing in the log explains. The cap is per result; what is worth reading is
+# always in the first lines, and the narrower tool is right there.
+MAX_TOOL_CHARS = 6000
+
+
 def _tool_content(result: Any) -> str:
     """Serialise a tool result for the model. Images aren't stringified into the
     context — a placeholder goes to the model; the console shows the real image."""
     if isinstance(result, dict) and str(result.get("mime_type", "")).startswith("image/") \
             and "data" in result:
         return "[image displayed to the user]"
-    return json.dumps(result, default=str)
+    text = json.dumps(result, default=str)
+    if len(text) <= MAX_TOOL_CHARS:
+        return text
+    # Say what was dropped and how to get it, otherwise the model re-runs the
+    # same call expecting a different answer.
+    return (
+        text[:MAX_TOOL_CHARS]
+        + f"\n\n[truncated: {len(text)} characters, {len(text) - MAX_TOOL_CHARS} not shown. "
+          "Ask for one thing rather than everything — get_object for a single "
+          "object, get_sketch_geometry for one sketch — or narrow the arguments.]"
+    )
 
 
 class AgentSession:
@@ -246,6 +266,14 @@ def demo() -> None:
 
     # Image results aren't stringified into the model context.
     assert _tool_content({"mime_type": "image/png", "data": "AAAA" * 99}) == "[image displayed to the user]"
+
+    # A big result is capped, and says so: a real get_objects runs to ~45,000
+    # characters and would otherwise be re-sent on every remaining step.
+    small = _tool_content({"objects": ["x"] * 10})
+    assert len(small) < MAX_TOOL_CHARS and "truncated" not in small, small
+    big = _tool_content({"objects": ["padding"] * 5000})
+    assert len(big) < MAX_TOOL_CHARS + 400, len(big)
+    assert "truncated" in big and "get_object" in big, big[-300:]
 
     # select_tools: the answer format is whatever the model felt like, so the
     # parse has to survive prose, bullets and JSON, and never return nothing.
