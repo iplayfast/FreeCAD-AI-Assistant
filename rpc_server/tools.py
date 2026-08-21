@@ -261,6 +261,57 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
         return tool.handler(**args)
 
 
+def _check_rpc_shims() -> None:
+    """Assert every XML-RPC shim calls a real tool with arguments it accepts.
+
+    ``FreeCADRPC``'s named methods are thin translations into ``call_tool``, and
+    nothing couples the two at import time: rename a schema key and the shim
+    keeps calling the old one, silently, until someone happens to use that
+    method over the wire. Read as source rather than imported, because both
+    modules need a running FreeCAD and this demo deliberately does not.
+    """
+    import ast
+    import glob
+    import os
+
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def field(node: ast.Dict, name: str):
+        for k, v in zip(node.keys, node.values):
+            if isinstance(k, ast.Constant) and k.value == name:
+                return v
+        return None
+
+    schemas = {}
+    for path in glob.glob(os.path.join(here, "*handlers*.py")):
+        for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "register" and len(node.args) == 3):
+                continue
+            props, required = field(node.args[2], "properties"), field(node.args[2], "required")
+            schemas[node.args[0].value] = (
+                {k.value for k in props.keys} if isinstance(props, ast.Dict) else set(),
+                set(ast.literal_eval(required)) if required is not None else set(),
+            )
+
+    src = ast.parse(open(os.path.join(here, "rpc_server.py"), encoding="utf-8").read())
+    checked = 0
+    for node in ast.walk(src):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", "") in ("_tool", "_wrapped", "_quiet")
+                and node.args and isinstance(node.args[0], ast.Constant)):
+            continue
+        name = node.args[0].value
+        assert name in schemas, f"RPC shim calls unknown tool {name!r}"
+        accepted, required = schemas[name]
+        passed = ({k.value for k in node.args[1].keys}
+                  if len(node.args) > 1 and isinstance(node.args[1], ast.Dict) else set())
+        assert not passed - accepted, f"{name}: shim passes {sorted(passed - accepted)}"
+        assert not required - passed, f"{name}: shim omits required {sorted(required - passed)}"
+        checked += 1
+    assert checked >= 10, f"only {checked} shims found — did the calls stop being literals?"
+
+
 def demo() -> None:
     """Offline self-check of the registry plumbing (no FreeCAD needed).
 
@@ -397,6 +448,7 @@ def demo() -> None:
         # An unknown profile means everything, not nothing.
         assert describe_tools("no such profile") == describe_tools()
 
+        _check_rpc_shims()
         print("tools.py demo: all checks passed")
     finally:
         load_handlers = real_load

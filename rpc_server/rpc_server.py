@@ -1,106 +1,141 @@
 import FreeCAD
-import FreeCADGui
 
-import contextlib
-import base64
-import io
-import os
-import tempfile
 import threading
 from typing import Any
 from xmlrpc.server import SimpleXMLRPCServer
 
-from PySide import QtCore
-
 from rpc_server.commands import register_commands, schedule_toggle_sync
-from rpc_server.fem_executor import run_fem_analysis as _run_fem_analysis
 from rpc_server.gui_dispatch import (
     cleanup_waker,
     dispatch_to_gui,
     ensure_gui_pump,
-    post_to_gui,
     request_shutdown,
 )
-from rpc_server.exec_env import exec_namespace
-from rpc_server.object_factory import create_object_gui
-from rpc_server.parts_library import get_parts_list, insert_part_from_library
-from rpc_server.property_mapper import Object, set_object_property
-from rpc_server.serialize import serialize_object
-from rpc_server.settings import RPC_HOST, RPC_PORT, load_settings, save_settings
-from rpc_server.view_manager import save_active_screenshot
+from rpc_server.settings import RPC_HOST, RPC_PORT
 
 rpc_server_thread = None
 rpc_server_instance = None
 
 
-def _run(task, **ok_fields) -> dict:
-    """Dispatch a mutation ``task`` to the GUI thread and shape the wire result.
-
-    ``task`` returns ``True`` on success or raises on failure (the dispatcher
-    re-raises the task's exception, or ``TimeoutError`` on timeout). Success
-    becomes ``{"success": True, **ok_fields}``; any exception becomes
-    ``{"success": False, "error": ...}``.
-    """
-    try:
-        dispatch_to_gui(task)
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-    return {"success": True, **ok_fields}
-
-
 class FreeCADRPC:
-    """RPC server for FreeCAD"""
+    """RPC server for FreeCAD.
+
+    Every method here is a thin shim over the tool registry: it translates the
+    XML-RPC argument shape in and the ``{"success": ...}`` envelope out, and
+    ``rpc_server.tools`` does the work. They used to be second implementations —
+    ``_edit_object_gui`` was ``tool_handlers.edit_object`` with a different log
+    string — which meant the panel and the wire could disagree about what one
+    operation does, and every registry fix (uniquified object names, syntax
+    errors pointing at a line, "document not found" naming the document) stopped
+    at the registry. The registry is the one that gets maintained, so the wire
+    now calls it.
+
+    The methods are kept, rather than leaving only ``call_tool``, because they
+    are a published interface: scripts and older MCP packages call them by name.
+    """
+
     TIMEOUT = 60               # generous wait for GUI thread to become free
     EXECUTE_CODE_TIMEOUT = 90  # GUI-thread execution; use execute_code_async for heavy OCCT ops
+
+    def _tool(self, name: str, arguments: dict = None, timeout: float = None):
+        """Run a registry tool on the GUI thread. Returns its value, or raises."""
+        from rpc_server import tools
+
+        return dispatch_to_gui(
+            lambda: tools.call_tool(name, arguments or {}),
+            timeout=self.EXECUTE_CODE_TIMEOUT if timeout is None else timeout,
+        )
+
+    def _wrapped(self, name: str, arguments: dict = None, timeout: float = None,
+                 shape=None) -> dict:
+        """``_tool`` in the legacy envelope: {"success": True, ...} or an error.
+
+        ``shape`` turns the tool's return value into the extra fields the old
+        method promised — the callers below are the only place those legacy
+        field names still exist.
+        """
+        try:
+            result = self._tool(name, arguments, timeout)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, **(shape(result) if shape else {})}
+
+    def _quiet(self, name: str, arguments: dict = None, default=None):
+        """``_tool`` for the read methods that answer with a bare value.
+
+        They return ``[]``/``None`` on failure instead of raising, because that
+        is what they have always done and callers branch on it.
+        """
+        try:
+            return self._tool(name, arguments)
+        except Exception as e:
+            # Swallowed for the caller, but not silent: a screenshot that comes
+            # back None because the active view is a spreadsheet is otherwise
+            # indistinguishable from one that came back None because the tool
+            # raised, and neither says so anywhere.
+            FreeCAD.Console.PrintWarning(f"MCP RPC: {name} failed: {e}\n")
+            return default
 
     def ping(self):
         return True
 
-    def describe_tools(self) -> dict:
-        """List every handler registered in the tool registry (name/description/schema)."""
+    def describe_tools(self, profile: str = None) -> dict:
+        """List handlers from the tool registry (name/description/schema).
+
+        ``profile`` names a subset from ``tools.PROFILES``; omitted or unknown
+        means everything. Advertising less never restricts what ``call_tool``
+        will run — it only shortens the schema, which is what a model with a
+        small context window needs.
+        """
         try:
             from rpc_server import tools
-            return {"success": True, "tools": tools.describe_tools()}
+            return {"success": True, "tools": tools.describe_tools(profile)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def call_tool(self, name: str, arguments: dict | None = None) -> dict:
         """Invoke a registered handler by name on the GUI thread.
 
-        This is the generic bridge: any handler added to ``tool_handlers`` becomes
-        callable over RPC without a new RPC method.
+        This is the generic bridge, and the one to prefer: any handler added to
+        the registry is callable over RPC without a new RPC method.
         """
         try:
-            from rpc_server import tools
-            result = dispatch_to_gui(
-                lambda: tools.call_tool(name, arguments or {}),
-                timeout=self.EXECUTE_CODE_TIMEOUT,
-            )
-            return {"success": True, "result": result}
+            return {"success": True, "result": self._tool(name, arguments)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def create_document(self, name="New_Document"):
-        return _run(lambda: self._create_document_gui(name), document_name=name)
+        # document_name is what FreeCAD actually called it: it sanitises and
+        # uniquifies ("Bearing 608" -> "Bearing_608"), and the old method echoed
+        # back the requested string, so every later call named a document that
+        # did not exist.
+        return self._wrapped("create_document", {"name": name},
+                             shape=lambda r: {"document_name": r["document_name"]})
 
     def create_object(self, doc_name, obj_data: dict[str, Any]):
-        obj = Object(
-            name=obj_data.get("Name", "New_Object"),
-            type=obj_data["Type"],
-            analysis=obj_data.get("Analysis", None),
-            properties=obj_data.get("Properties", {}),
+        return self._wrapped(
+            "create_object",
+            {"doc_name": doc_name,
+             "obj_type": obj_data["Type"],
+             "obj_name": obj_data.get("Name", "New_Object"),
+             "properties": obj_data.get("Properties", {}),
+             "analysis_name": obj_data.get("Analysis")},
+            # Likewise uniquified: two "Race"s give Race and Race001.
+            shape=lambda r: {"object_name": r["object_name"]},
         )
-        return _run(lambda: self._create_object_gui(doc_name, obj), object_name=obj.name)
 
     def edit_object(self, doc_name: str, obj_name: str, properties: dict[str, Any]) -> dict[str, Any]:
-        obj = Object(
-            name=obj_name,
-            properties=properties.get("Properties", {}),
+        # Callers pass either {"Properties": {...}} or the properties directly.
+        props = properties.get("Properties", properties)
+        return self._wrapped(
+            "edit_object",
+            {"doc_name": doc_name, "obj_name": obj_name, "properties": props},
+            shape=lambda r: {"object_name": r["object_name"]},
         )
-        return _run(lambda: self._edit_object_gui(doc_name, obj), object_name=obj.name)
 
     def delete_object(self, doc_name: str, obj_name: str):
-        return _run(lambda: self._delete_object_gui(doc_name, obj_name), object_name=obj_name)
+        return self._wrapped("delete_object", {"doc_name": doc_name, "obj_name": obj_name},
+                             shape=lambda r: {"object_name": obj_name})
 
     def reload_document(self, doc_name: str) -> dict[str, Any]:
         """Close and re-open a document by name to pick up external file
@@ -108,7 +143,8 @@ class FreeCADRPC:
         running headlessly). Returns success once the new document is
         loaded from disk.
         """
-        return _run(lambda: self._reload_document_gui(doc_name), document_name=doc_name)
+        return self._wrapped("reload_document", {"doc_name": doc_name},
+                             shape=lambda r: {"document_name": r["document_name"]})
 
     def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
         """Run the CalculiX solver on an existing Fem::FemAnalysis and return summary results."""
@@ -116,11 +152,13 @@ class FreeCADRPC:
             timeout_s = int(timeout)
         except (TypeError, ValueError):
             return {"success": False, "error": f"invalid timeout: {timeout!r}"}
-        # The handler returns a rich result dict of its own; on dispatch
-        # timeout/failure, shape the raised exception into the same envelope.
+        # The handler returns a rich result dict of its own, passed straight
+        # through. Solving outlasts the default GUI-dispatch wait, which is what
+        # the timeout argument is for.
         try:
-            return dispatch_to_gui(
-                lambda: self._run_fem_analysis_gui(doc_name, analysis_name),
+            return self._tool(
+                "run_fem_analysis",
+                {"doc_name": doc_name, "analysis_name": analysis_name},
                 timeout=timeout_s,
             )
         except Exception as e:
@@ -143,25 +181,8 @@ class FreeCADRPC:
 
         The caller should poll a document object for completion status.
         """
-        def _show(msg):
-            post_to_gui(lambda: FreeCADGui.getMainWindow().statusBar().showMessage(msg))
-
-        def worker() -> None:
-            # No sys.stdout redirect here: contextlib.redirect_stdout swaps stdout
-            # process-wide, not per-thread, so it would race with the GUI thread.
-            # Background code should report via FreeCAD.Console (thread-safe).
-            _show("MCP: running background task…")
-            try:
-                exec(code, exec_namespace())
-                FreeCAD.Console.PrintMessage("Async code execution completed.\n")
-            except Exception as e:
-                import traceback as _tb
-                FreeCAD.Console.PrintError(f"Async code error: {e}\n{_tb.format_exc()}")
-            finally:
-                post_to_gui(lambda: FreeCADGui.getMainWindow().statusBar().clearMessage())
-
-        threading.Thread(target=worker, daemon=True).start()
-        return {"success": True, "message": "Background execution started."}
+        return self._wrapped("execute_code_async", {"code": code},
+                             shape=lambda r: {"message": r["message"]})
 
     def execute_code(self, code: str) -> dict[str, Any]:
         """Execute Python code on the GUI thread and wait for the result.
@@ -171,15 +192,8 @@ class FreeCADRPC:
         Use execute_code_async for heavy OCCT boolean ops (fuse/cut)
         that would block the GUI thread too long.
         """
-        output_buffer = io.StringIO()
-
-        def task():
-            with contextlib.redirect_stdout(output_buffer):
-                exec(code, exec_namespace())
-            return True
-
         try:
-            dispatch_to_gui(task, timeout=self.EXECUTE_CODE_TIMEOUT)
+            result = self._tool("execute_code", {"code": code})
         except Exception as e:
             # Log the offending code (truncated) to make errors traceable
             code_preview = code if len(code) <= 800 else code[:800] + "\n...(truncated)"
@@ -191,51 +205,24 @@ class FreeCADRPC:
         FreeCAD.Console.PrintMessage("Python code executed successfully.\n")
         return {
             "success": True,
-            "message": "Python code executed successfully.\nOutput: " + output_buffer.getvalue(),
+            "message": "Python code executed successfully.\nOutput: " + result.get("output", ""),
         }
 
     def get_objects(self, doc_name):
-        # Serialization touches obj.ViewObject, a GUI API that FreeCAD 1.x only
-        # permits on the main thread, so run it there via dispatch_to_gui.
-        def task():
-            # FreeCAD.getDocument raises (not returns None) for an unknown name.
-            try:
-                doc = FreeCAD.getDocument(doc_name)
-            except Exception:
-                return []
-            return [serialize_object(obj) for obj in doc.Objects]
-
-        try:
-            return dispatch_to_gui(task)
-        except Exception:
-            return []
+        return self._quiet("get_objects", {"doc_name": doc_name}, default=[])
 
     def get_object(self, doc_name, obj_name):
-        # See get_objects: serialization must run on the GUI thread.
-        def task():
-            try:
-                doc = FreeCAD.getDocument(doc_name)
-            except Exception:
-                return None
-            obj = doc.getObject(obj_name)
-            return serialize_object(obj) if obj else None
-
-        try:
-            return dispatch_to_gui(task)
-        except Exception:
-            return None
+        return self._quiet("get_object", {"doc_name": doc_name, "obj_name": obj_name})
 
     def insert_part_from_library(self, relative_path):
-        return _run(
-            lambda: self._insert_part_from_library(relative_path),
-            message="Part inserted from library.",
-        )
+        return self._wrapped("insert_part_from_library", {"relative_path": relative_path},
+                             shape=lambda r: {"message": r["message"]})
 
     def list_documents(self):
-        return list(FreeCAD.listDocuments().keys())
+        return self._quiet("list_documents", default=[])
 
     def get_parts_list(self):
-        return get_parts_list()
+        return self._quiet("get_parts_list", default=[])
 
     def get_active_screenshot(
         self,
@@ -249,99 +236,11 @@ class FreeCADRPC:
         Returns None if the active view does not support screenshots
         (e.g., TechDraw or Spreadsheet workbench).
         """
-        fd, tmp_path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-
-        def task():
-            try:
-                active_view = FreeCADGui.ActiveDocument.ActiveView
-            except Exception:
-                return False
-            if active_view is None or not hasattr(active_view, "saveImage"):
-                view_type = type(active_view).__name__ if active_view is not None else "None"
-                FreeCAD.Console.PrintWarning(
-                    f"MCP RPC: view type '{view_type}' does not support screenshots\n"
-                )
-                return False
-            return save_active_screenshot(tmp_path, view_name, width, height, focus_object)
-
-        try:
-            try:
-                ok = dispatch_to_gui(task)
-            except Exception as e:
-                FreeCAD.Console.PrintWarning(f"MCP RPC: screenshot failed: {e}\n")
-                return None
-            if ok is True:
-                with open(tmp_path, "rb") as f:
-                    return base64.b64encode(f.read()).decode("utf-8")
-            return None  # task returned False: view does not support screenshots
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def _create_document_gui(self, name):
-        doc = FreeCAD.newDocument(name)
-        doc.recompute()
-        FreeCAD.Console.PrintMessage(f"Document '{name}' created via RPC.\n")
-        return True
-
-    def _create_object_gui(self, doc_name, obj: Object):
-        return create_object_gui(doc_name, obj)
-
-    def _edit_object_gui(self, doc_name: str, obj: Object):
-        try:
-            doc = FreeCAD.getDocument(doc_name)
-        except Exception:
-            raise ValueError(f"Document '{doc_name}' not found.")
-
-        obj_ins = doc.getObject(obj.name)
-        if not obj_ins:
-            raise ValueError(f"Object '{obj.name}' not found in document '{doc_name}'.")
-
-        set_object_property(doc, obj_ins, obj.properties)  # raises on failure
-        doc.recompute()
-        FreeCAD.Console.PrintMessage(f"Object '{obj.name}' updated via RPC.\n")
-        return True
-
-    def _run_fem_analysis_gui(self, doc_name: str, analysis_name: str):
-        return _run_fem_analysis(doc_name, analysis_name)
-
-    def _delete_object_gui(self, doc_name: str, obj_name: str):
-        try:
-            doc = FreeCAD.getDocument(doc_name)
-        except Exception:
-            raise ValueError(f"Document '{doc_name}' not found.")
-
-        doc.removeObject(obj_name)  # raises if the object does not exist
-        doc.recompute()
-        FreeCAD.Console.PrintMessage(f"Object '{obj_name}' deleted via RPC.\n")
-        return True
-
-    def _reload_document_gui(self, doc_name: str):
-        if doc_name not in FreeCAD.listDocuments():
-            raise ValueError(f"Document '{doc_name}' is not loaded.")
-        doc = FreeCAD.getDocument(doc_name)
-        file_path = doc.FileName
-        if not file_path:
-            raise ValueError(
-                f"Document '{doc_name}' has no file on disk "
-                "(unsaved scratch document); nothing to reload from."
-            )
-        if not os.path.exists(file_path):
-            raise ValueError(f"File for '{doc_name}' not found at {file_path!r}.")
-        # Close, then reopen from the same file. Reopen preserves the
-        # original document name when the file was previously saved
-        # under that name.
-        FreeCAD.closeDocument(doc_name)
-        FreeCAD.openDocument(file_path)
-        FreeCAD.Console.PrintMessage(
-            f"Document '{doc_name}' reloaded from '{file_path}' via RPC.\n"
-        )
-        return True
-
-    def _insert_part_from_library(self, relative_path):
-        insert_part_from_library(relative_path)  # raises on failure
-        return True
+        shot = self._quiet("get_active_screenshot", {
+            "view_name": view_name, "width": width, "height": height,
+            "focus_object": focus_object,
+        })
+        return shot["data"] if shot else None
 
 
 def start_rpc_server(port=RPC_PORT):

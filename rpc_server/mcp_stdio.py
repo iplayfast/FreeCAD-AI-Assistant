@@ -96,7 +96,14 @@ def _handle(req: dict) -> dict | None:
 
     if method == "tools/list":
         try:
-            resp = _rpc().describe_tools()
+            # The whole schema is ~27k characters, re-sent on every step of every
+            # turn — more than the entire window of a local model started with
+            # -c 2048. $FREECAD_TOOL_PROFILE advertises one of tools.PROFILES
+            # instead ("Core only", "PartDesign", ...); call_tool still runs
+            # anything. Sent only when set, so an older FreeCAD whose
+            # describe_tools takes no argument still answers.
+            profile = os.environ.get("FREECAD_TOOL_PROFILE")
+            resp = _rpc().describe_tools(profile) if profile else _rpc().describe_tools()
         except Exception as e:
             return {"jsonrpc": "2.0", "id": req_id,
                      "error": {"code": -32000, "message": _unreachable(e)}}
@@ -168,6 +175,19 @@ def demo() -> None:
 
         listed = _handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         assert listed["result"]["tools"][0]["inputSchema"] == fake_tools[0]["parameters"]
+
+        # $FREECAD_TOOL_PROFILE reaches the server; unset, the call takes no
+        # argument at all, so an older FreeCAD still answers it.
+        asked = []
+        fake.describe_tools = lambda *a: (asked.append(a),
+                                          {"success": True, "tools": fake_tools})[1]
+        _handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        os.environ["FREECAD_TOOL_PROFILE"] = "Core only"
+        try:
+            _handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        finally:
+            del os.environ["FREECAD_TOOL_PROFILE"]
+        assert asked == [(), ("Core only",)], asked
 
         called = _handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                            "params": {"name": "ping_tool", "arguments": {}}})
