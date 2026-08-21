@@ -9,9 +9,13 @@ the post-startup sync that reflects saved settings on the checkable items.
 
 import FreeCAD
 import FreeCADGui
-from PySide import QtCore, QtWidgets
 
 from rpc_server.settings import load_settings, save_settings
+
+# PySide is imported inside the two functions that touch Qt, not here. Importing
+# it at module scope kills freecadcmd outright — the process exits before any
+# traceback — which made rpc_server.py (this module's importer) impossible to
+# load headless, and so impossible to include in run_checks.
 
 
 class StartRPCServerCommand:
@@ -67,6 +71,12 @@ class ToggleAutoStartCommand:
 
 
 def register_commands() -> None:
+    # Headless (freecadcmd) has a FreeCADGui module with no addCommand, and this
+    # runs at rpc_server import time — so without this guard the whole RPC layer
+    # was unimportable outside the GUI, and therefore untestable by run_checks.
+    # There are no toolbars to add commands to anyway.
+    if not hasattr(FreeCADGui, "addCommand"):
+        return
     FreeCADGui.addCommand("Start_RPC_Server", StartRPCServerCommand())
     FreeCADGui.addCommand("Stop_RPC_Server", StopRPCServerCommand())
     FreeCADGui.addCommand("Toggle_Auto_Start", ToggleAutoStartCommand())
@@ -90,6 +100,8 @@ def _sync_toggle_states(retries_left: int = _SYNC_MAX_RETRIES) -> None:
         settings = load_settings()
         main_window = FreeCADGui.getMainWindow()
         found = 0
+        from PySide import QtWidgets
+
         for action in main_window.findChildren(QtWidgets.QAction):
             key = _TOGGLE_COMMANDS.get(action.objectName())
             if key is not None:
@@ -100,8 +112,14 @@ def _sync_toggle_states(retries_left: int = _SYNC_MAX_RETRIES) -> None:
     except Exception:
         pass
     if retries_left > 0:
+        from PySide import QtCore
+
         QtCore.QTimer.singleShot(2000, lambda: _sync_toggle_states(retries_left - 1))
 
 
 def schedule_toggle_sync() -> None:
+    if not hasattr(FreeCADGui, "addCommand"):
+        return          # headless: no menu actions to sync
+    from PySide import QtCore
+
     QtCore.QTimer.singleShot(2000, _sync_toggle_states)

@@ -33,6 +33,7 @@ MODULES = (
     "rpc_server.bim_handlers",
     "rpc_server.console",
     "rpc_server.mcp_stdio",
+    "rpc_server.rpc_server",
 )
 
 

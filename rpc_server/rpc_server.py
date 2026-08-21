@@ -2,7 +2,7 @@ import FreeCAD
 
 import threading
 from typing import Any
-from xmlrpc.server import SimpleXMLRPCServer
+from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 
 from rpc_server.commands import register_commands, schedule_toggle_sync
 from rpc_server.gui_dispatch import (
@@ -243,6 +243,38 @@ class FreeCADRPC:
         return shot["data"] if shot else None
 
 
+class _LocalOnlyHandler(SimpleXMLRPCRequestHandler):
+    """Refuse anything a web page could have sent.
+
+    Loopback is not the boundary it looks like. A page you visit in any browser
+    can POST cross-origin to 127.0.0.1 without a CORS preflight, as long as it
+    uses a "simple" content type — it cannot read the reply, but by then
+    execute_code has already run arbitrary Python inside FreeCAD. Verified: a
+    text/plain POST carrying an XML-RPC body reaches the handler untouched.
+
+    Two headers close it, and no credential has to be invented:
+
+      * a cross-origin fetch always carries Origin, and a real XML-RPC client
+        never does;
+      * text/xml is not a simple content type, so requiring it forces a
+        preflight, which this server does not answer.
+    """
+
+    def do_POST(self):
+        origin = self.headers.get("Origin")
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if origin or content_type not in ("text/xml", "application/xml"):
+            FreeCAD.Console.PrintWarning(
+                f"MCP RPC: refused a request that looks browser-driven "
+                f"(Origin={origin!r}, Content-Type={content_type!r})\n"
+            )
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        return super().do_POST()
+
+
 def start_rpc_server(port=RPC_PORT):
     # Bound to loopback only: this server runs exec() of arbitrary Python, so it
     # must never be reachable off the local machine.
@@ -253,7 +285,7 @@ def start_rpc_server(port=RPC_PORT):
 
     host = RPC_HOST
     rpc_server_instance = SimpleXMLRPCServer(
-        (host, port), allow_none=True, logRequests=False
+        (host, port), requestHandler=_LocalOnlyHandler, allow_none=True, logRequests=False
     )
     rpc_server_instance.register_instance(FreeCADRPC())
 
@@ -286,6 +318,49 @@ def stop_rpc_server():
         return "RPC Server stopped."
 
     return "RPC Server was not running."
+
+
+def demo() -> None:
+    """Self-check of the wire guard: browser-shaped requests must not get in.
+
+    Runs a throwaway server on an ephemeral port, so it never disturbs a real
+    one. Run: ``freecadcmd run_checks.py``.
+    """
+    import urllib.error
+    import urllib.request
+    import xmlrpc.client
+
+    server = SimpleXMLRPCServer(("127.0.0.1", 0), requestHandler=_LocalOnlyHandler,
+                                allow_none=True, logRequests=False)
+    server.register_function(lambda: "RAN", "ping")
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        call = (b"<?xml version='1.0'?><methodCall><methodName>ping</methodName>"
+                b"<params></params></methodCall>")
+
+        def post(headers) -> int:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/", data=call, method="POST", headers=headers)
+            try:
+                return urllib.request.urlopen(request, timeout=5).status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        # The attack: a "simple" content type needs no CORS preflight, so any
+        # page in any browser can send this to a loopback port. It must not run.
+        assert post({"Content-Type": "text/plain;charset=UTF-8"}) == 403
+        # Origin is present on every cross-origin fetch and on no real client.
+        assert post({"Content-Type": "text/xml", "Origin": "https://evil.example"}) == 403
+        # ...and a genuine client still works, which is the whole constraint.
+        assert post({"Content-Type": "text/xml"}) == 200
+        proxy = xmlrpc.client.ServerProxy(f"http://127.0.0.1:{port}", allow_none=True)
+        assert proxy.ping() == "RAN"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    print("rpc_server demo: all checks passed", flush=True)
 
 
 register_commands()
