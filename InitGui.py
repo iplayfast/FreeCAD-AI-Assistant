@@ -140,7 +140,6 @@ class AIAssistantWB(Gui.Workbench):
             "AITogglePanelCommand",
             "AILaunchAgentCommand",
             "AIBimWizardCommand",
-            "Start_RPC_Server",
             "Stop_RPC_Server",
             "Toggle_Auto_Start",
         ]

@@ -10,8 +10,9 @@ here too, with no separate wiring.
 Runs OUTSIDE FreeCAD as a plain subprocess (typically launched with the
 system's own python3, not FreeCAD's bundled one), so it is deliberately
 FreeCAD-free and stdlib-only, exactly like ``tools.py``. It is a bridge, not a
-replacement: the addon's RPC server must already be running (Start RPC Server
-in FreeCAD, or auto_start_rpc) or every call reports that it isn't.
+replacement: the addon's RPC server must already be running (it starts with
+'Launch Agent CLI' in FreeCAD, or on startup with auto_start_rpc) or every call
+reports that it isn't.
 
 Register it with an MCP-speaking CLI by pointing its config at this file:
 
@@ -43,8 +44,8 @@ def _rpc() -> xmlrpc.client.ServerProxy:
 def _unreachable(e: Exception) -> str:
     return (
         f"cannot reach the FreeCAD RPC server at {RPC_URL}: {e}. Start it from "
-        "the AI Assistant toolbar in FreeCAD ('Start RPC Server'), or enable "
-        "auto-start."
+        "AI Assistant toolbar in FreeCAD ('Launch Agent CLI' starts it), or "
+        "enable auto-start."
     )
 
 

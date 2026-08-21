@@ -426,7 +426,7 @@ def write_briefing(cli: dict = None) -> str:
         f"Otherwise, talk to the XML-RPC server on **{url}** (loopback only).",
         f"Status at launch: **{'RUNNING' if running else 'NOT RUNNING'}**.",
         "" if running else
-        "It is off: the user starts it with 'Start RPC Server' on the AI Assistant\n"
+        "It is off: the user starts it with 'Launch Agent CLI' on the AI Assistant\n"
         "toolbar in FreeCAD. Nothing below will answer until they do — say so\n"
         "rather than guessing at another way in.",
         "",

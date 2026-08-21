@@ -1,7 +1,7 @@
 """Qt Command classes for the MCP Addon workbench menu.
 
-Defines the three toolbar/menu entries (Start, Stop, Toggle Auto-Start), plus
-the post-startup sync that reflects saved settings on the checkable items.
+Defines the two toolbar/menu entries (Stop, Toggle Auto-Start), plus the
+post-startup sync that reflects saved settings on the checkable items.
 
 ``register_commands()`` and ``schedule_toggle_sync()`` are invoked from
 ``rpc_server.py`` at import time to preserve current side-effect behavior.
@@ -18,25 +18,18 @@ from rpc_server.settings import load_settings, save_settings
 # load headless, and so impossible to include in run_checks.
 
 
-class StartRPCServerCommand:
+# There is no Start command. Launching an agent CLI starts the server itself —
+# the briefing promises a live port, so it has to — and auto_start covers the
+# rest. A button whose job is already done by the only action that needs it is
+# one more thing to explain. Stop stays: the port accepts arbitrary Python, and
+# closing it without quitting FreeCAD has to be possible.
+class StopRPCServerCommand:
     def GetResources(self):
-        return {"MenuText": "Start RPC Server", "ToolTip": "Start RPC Server"}
+        return {"MenuText": "Stop RPC Server",
+                "ToolTip": "Stop the RPC server. Launching an agent CLI starts it again."}
 
     def Activated(self):
         from . import rpc_server  # late import: avoids circular at module load
-        msg = rpc_server.start_rpc_server()
-        FreeCAD.Console.PrintMessage(msg + "\n")
-
-    def IsActive(self):
-        return True
-
-
-class StopRPCServerCommand:
-    def GetResources(self):
-        return {"MenuText": "Stop RPC Server", "ToolTip": "Stop RPC Server"}
-
-    def Activated(self):
-        from . import rpc_server
         msg = rpc_server.stop_rpc_server()
         FreeCAD.Console.PrintMessage(msg + "\n")
 
@@ -77,7 +70,6 @@ def register_commands() -> None:
     # There are no toolbars to add commands to anyway.
     if not hasattr(FreeCADGui, "addCommand"):
         return
-    FreeCADGui.addCommand("Start_RPC_Server", StartRPCServerCommand())
     FreeCADGui.addCommand("Stop_RPC_Server", StopRPCServerCommand())
     FreeCADGui.addCommand("Toggle_Auto_Start", ToggleAutoStartCommand())
 
