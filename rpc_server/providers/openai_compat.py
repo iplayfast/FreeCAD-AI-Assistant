@@ -99,5 +99,36 @@ def _from_openai(resp: dict) -> AssistantReply:
         except json.JSONDecodeError:
             args = {}
         tool_calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=args))
+
+    if not tool_calls:
+        recovered = _recover_tool_call(text)
+        if recovered:
+            tool_calls, text = [recovered], ""
+
     stop = "tools" if tool_calls else "end"
     return AssistantReply(text=text, tool_calls=tool_calls, stop=stop)
+
+
+def _recover_tool_call(text: str) -> ToolCall | None:
+    """A tool call the model wrote as JSON text instead of ``tool_calls``.
+
+    Some small/local models (seen with Ollama + granite4.1:3b) never populate
+    the structured ``tool_calls`` field even when clearly attempting a call —
+    they just echo ``{"name": ..., "arguments": {...}}`` as the message body.
+    Recovered here so the call still runs instead of leaking as a raw JSON
+    blob the user has to read as if it were the model's reply.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`").removeprefix("json").strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return None
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    name = obj.get("name")
+    arguments = obj.get("arguments", {})
+    if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+        return None
+    return ToolCall(id="recovered-0", name=name, arguments=arguments)

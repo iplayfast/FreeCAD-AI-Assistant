@@ -102,6 +102,27 @@ def demo() -> None:
     assert r2.tool_calls[0].name == "g" and r2.tool_calls[0].arguments == {"b": 2}
     assert r2.stop == "tools", r2
 
+    # Some small local models (seen with Ollama + granite4.1:3b) never fill
+    # tool_calls, and echo the call as JSON text in content instead — that
+    # must still run as a tool call, not leak to the user as a raw JSON reply.
+    r3 = _from_openai({"choices": [{"message": {
+        "content": '{"name": "execute_code", "arguments": {"code": "1+1"}}',
+    }, "finish_reason": "stop"}]})
+    assert r3.stop == "tools", r3
+    assert r3.tool_calls[0].name == "execute_code", r3
+    assert r3.tool_calls[0].arguments == {"code": "1+1"}, r3
+    assert r3.text == "", r3
+
+    # Fenced JSON is unwrapped the same way.
+    r4 = _from_openai({"choices": [{"message": {
+        "content": '```json\n{"name": "list_documents", "arguments": {}}\n```',
+    }, "finish_reason": "stop"}]})
+    assert r4.tool_calls[0].name == "list_documents", r4
+
+    # Ordinary prose is never mistaken for a tool call.
+    r5 = _from_openai({"choices": [{"message": {"content": "Created the box."}}]})
+    assert r5.stop == "end" and r5.tool_calls == [], r5
+
     # Wire tap: installed, called with both directions, and never able to break
     # the request it observes.
     from rpc_server.providers import base as _base
