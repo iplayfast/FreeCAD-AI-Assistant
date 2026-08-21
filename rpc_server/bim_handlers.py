@@ -594,6 +594,30 @@ from rpc_server.bim_handlers import demo; demo()"``
         except ValueError:
             pass
 
+        # Every snake_case call a skill shows must be a real tool or a real
+        # execute_code helper. Skills are prose: renaming a tool breaks nothing
+        # and nobody notices. bim.md told models to call execute_python,
+        # check_sketch, sketch_connect, sketch_arc and sketch_constrain_point —
+        # none of which has ever existed anywhere in this addon — and the only
+        # symptom was an agent that looked incompetent at BIM.
+        import builtins
+
+        from rpc_server import tools as _tools
+        from rpc_server.build_helpers import HELPERS
+
+        known = ({t["name"] for t in _tools.describe_tools()}
+                 | set(HELPERS) | set(dir(builtins)))
+        for skill in _skill_names():
+            text = get_skill(skill)["content"]
+            # Code spans only, and only names with an underscore: prose is full
+            # of "(all values in mm)" and would drown the signal otherwise.
+            code = "\n".join(re.findall(r"```.*?```", text, re.S)
+                             + re.findall(r"`([^`\n]+)`", text))
+            called = {c for c in re.findall(r"(?<![\w.])([a-z][a-z_0-9]*)\s*\(", code)
+                      if "_" in c}
+            assert not called - known, \
+                f"{skill}.md calls what does not exist: {sorted(called - known)}"
+
         # lookup_freecad_op: both relevance rules that were wrong at first.
         ids = lambda q: [m["id"] for m in lookup_freecad_op(q, limit=4)["matches"]]
         # Stemming: "revolve" has to reach "Revolution".

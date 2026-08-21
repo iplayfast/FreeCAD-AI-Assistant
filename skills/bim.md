@@ -17,8 +17,8 @@ Example workflow using helpers:
 1. create_bim_document("MyProject")
 2. [PLAN] Derive all wall coordinates — present table to user, resolve ambiguities
 3. [CONFIRM] User approves the coordinate table (or clarifies)
-4. execute_python — create sketch + add ALL lines in one call
-5. check_sketch("FloorplanSketch")  ← must return fully_constrained=True
+4. execute_code — create sketch + add ALL lines in one call
+5. check_sketch_geometry("FloorplanSketch")  ← must return fully_constrained=True
 6. add_wall_from_sketch("FloorplanSketch", 2438, 152, "Floor 1")
 7. add_opening(...)  ← repeat for each door/window
 ```
@@ -45,12 +45,12 @@ looks wrong in FreeCAD.
 
 Only move to Phase 2 once the user has confirmed (or corrected) the table.
 
-### Phase 2: Create the sketch in one execute_python call
+### Phase 2: Create the sketch in one execute_code call
 
-**MANDATORY: Do NOT call execute_python until the user has confirmed the coordinate
+**MANDATORY: Do NOT call execute_code until the user has confirmed the coordinate
 table from Phase 1. Present the table, then STOP AND WAIT for a reply.**
 
-Once confirmed, create the sketch in a single `execute_python` call.
+Once confirmed, create the sketch in a single `execute_code` call.
 **Use pre-calculated literal mm floats directly in sketch_line() — do NOT use
 Python variables with multi-word names.** Multi-word variable names with hyphens
 are a Python syntax error (e.g. `LoftWall-Length` is parsed as subtraction).
@@ -78,7 +78,7 @@ doc.recompute()
 
 Coordinate system: east=+X, north=+Y, south=-Y, west=-X.
 
-Then call `check_sketch` and `add_wall_from_sketch`.
+Then call `check_sketch_geometry` and `add_wall_from_sketch`.
 
 **Never delete a sketch and start over.** If the sketch already exists and you need to
 inspect its current state, call `get_sketch_geometry("FloorplanSketch")` first — it returns
@@ -126,45 +126,38 @@ Walls can be created from a Sketcher Sketch (Highly Recommended for parametric l
 
 ### Method A: From a Sketcher Sketch (Recommended)
 
-**Always use the `sketch_line` and `sketch_connect` helpers** — they are injected into
-the execute_python namespace automatically and handle H/V constraints and signed
-DistanceX/DistanceY for you. Never call `addGeometry` + `addConstraint` manually.
+**Use the `sketch_line` tool, one call per wall.** It pins both endpoints to
+absolute (x, y) in mm, so there is no sign arithmetic and no H/V or DistanceX
+constraint to add by hand. A wall running south from (0,0) to (0,−3000) is just
+`y2=-3000`. Never hand-write `addGeometry` + `addConstraint` in `execute_code`
+for this — that is what the tool is for, and each call is its own undo step.
 
-**sketch_line pins both endpoints to absolute (x, y) coordinates** — no sign
-calculation required. A wall going south from (0,0) to (0,−3000) just passes
-y2=−3000 and the constraint is applied correctly. This approach is derived from
-the GearWorkBench util.py library which has been proven across many parametric models.
+```
+create_object(doc_name="MyProject", obj_type="Sketcher::SketchObject",
+              obj_name="FloorplanSketch")
 
-```python
-# 1. Create the sketch (no Support/MapMode needed for BIM walls)
-sketch = doc.addObject("Sketcher::SketchObject", "FloorplanSketch")
-
-# 2. Add all wall baselines using sketch_line.
-#    Both endpoints are pinned absolutely — no Coincident or H/V constraints needed.
-i0 = sketch_line(sketch, 0, 0, 5000, 0,       label="NorthWall")  # → east
-i1 = sketch_line(sketch, 5000, 0, 5000, -3000, label="EastWall")   # → south
-i2 = sketch_line(sketch, 5000, -3000, 0, -3000, label="SouthWall") # → west
-i3 = sketch_line(sketch, 0, -3000, 0, 0,        label="WestWall")  # → north
-
-# 3. Optional: add Coincident constraints for explicit topology (good practice)
-sketch_connect(sketch, i0, 2, i1, 1)
-sketch_connect(sketch, i1, 2, i2, 1)
-sketch_connect(sketch, i2, 2, i3, 1)
-sketch_connect(sketch, i3, 2, i0, 1)
-
-# 4. Recompute and verify before creating wall
-doc.recompute()
-# check_sketch("FloorplanSketch")  ← MUST return fully_constrained=True
-# Redundant constraints from shared endpoints are expected — not a problem.
+sketch_line(doc_name="MyProject", sketch_name="FloorplanSketch",
+            x1=0,    y1=0,     x2=5000, y2=0,     label="NorthWall")   # east
+sketch_line(doc_name="MyProject", sketch_name="FloorplanSketch",
+            x1=5000, y1=0,     x2=5000, y2=-3000, label="EastWall")    # south
+sketch_line(doc_name="MyProject", sketch_name="FloorplanSketch",
+            x1=5000, y1=-3000, x2=0,    y2=-3000, label="SouthWall")   # west
+sketch_line(doc_name="MyProject", sketch_name="FloorplanSketch",
+            x1=0,    y1=-3000, x2=0,    y2=0,     label="WestWall")    # north
 ```
 
-Other helpers available in execute_python:
-```python
-sketch_arc(sketch, cx, cy, diameter, start_rad, end_rad)  # → {index, start_point, end_point}
-sketch_circle(sketch, cx, cy, diameter)                    # → index
-sketch_polygon(sketch, [(x1,y1),(x2,y2),...], closed=True) # → [indices]
-sketch_constrain_point(sketch, geo_idx, pt_idx, x, y)      # pin any point absolutely
-```
+Lines that share an endpoint produce *redundant* (not conflicting) constraints,
+which the solver handles — there is nothing to connect up afterwards.
+
+Then verify before building walls from it:
+
+- `check_sketch_geometry(doc_name, sketch_name)` — must report fully constrained.
+- `get_sketch_geometry(doc_name, sketch_name)` — reads the plan back with the
+  labels, which is how you check the coordinate table actually got built.
+
+The other sketch tools take the same `doc_name`/`sketch_name` pair:
+`sketch_circle(..., radius, x, y)` and
+`sketch_polygon(..., points=[{"x":…,"y":…}, …], closed=True)`.
 
 ### Method B: From Draft baselines (For simple single walls)
 ```python
