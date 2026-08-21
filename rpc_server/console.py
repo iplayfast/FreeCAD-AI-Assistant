@@ -14,14 +14,16 @@ directly (no dispatch, no worker thread) and output prints inline. The GUI is
 blocked during the network call, exactly as it is for any long console command.
 """
 
+import contextlib
 import json
 import os
 import re
+import tempfile
 import threading
 
 import FreeCAD
 
-from rpc_server.agent import AgentSession, INCOMPLETE_STOPS
+from rpc_server.agent import AgentSession, DEFAULT_SYSTEM, INCOMPLETE_STOPS
 from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump, post_to_gui
 from rpc_server.providers import ProviderError, get_json, make_provider, set_wire_logger
 from rpc_server.settings import load_settings, save_settings
@@ -413,8 +415,14 @@ def write_briefing(cli: dict = None) -> str:
         'fc.ping()',
         'fc.list_documents()',
         'fc.call_tool("create_document", {"name": "Demo"})',
-        'fc.call_tool("create_object", {"doc_name": "Demo", "obj_type": "Part::Box",',
-        '                               "obj_name": "Box", "properties": {"Length": 10}})',
+        '# a parametric PartDesign solid — body, sketch, geometry, feature:',
+        'fc.call_tool("create_body", {"doc_name": "Demo", "name": "Shaft"})',
+        'fc.call_tool("create_sketch", {"doc_name": "Demo", "body_name": "Shaft",',
+        '                               "name": "Profile", "plane": "XY_Plane"})',
+        'fc.call_tool("sketch_circle", {"doc_name": "Demo",',
+        '                              "sketch_name": "ProfileSketch", "radius": 8})',
+        'fc.call_tool("pad", {"doc_name": "Demo", "body_name": "Shaft",',
+        '                     "sketch_name": "ProfileSketch", "length": 40})',
         "```",
         "",
         "### XML-RPC methods",
@@ -436,8 +444,19 @@ def write_briefing(cli: dict = None) -> str:
 
     lines += [
         "",
+        "## How to build",
+        "",
+        # One source of truth with the in-panel agent: the same guidance that
+        # keeps the built-in assistant on PartDesign has to reach a launched CLI,
+        # which otherwise defaults to writing Python and importing the result.
+        DEFAULT_SYSTEM.replace("You are a FreeCAD embedded AI. You", "You"),
+        "",
         "## Rules",
         "",
+        "- Build with the tools above, not with Python. `execute_code` is the last",
+        "  resort for something no tool covers — not the first move, and never a",
+        "  way to model geometry elsewhere and import it. A tool call the user can",
+        "  undo, edit and re-run beats a script that produced a shape once.",
         "- `execute_code` runs arbitrary Python inside the user's live FreeCAD.",
         "  There is no sandbox and no confirmation step. Use it for CAD work, not",
         "  for touching the filesystem or the network.",
@@ -489,6 +508,39 @@ def launch_agent_cli(cli: dict = None) -> tuple:
         started = f"RPC server did not start ({e})"
     ok, message = _launch_cli(cli)
     return ok, f"{started} {message}"
+
+
+def _wrapper_script(argv: list, cwd: str) -> str:
+    """Write a one-token launcher for the terminal to run, and return its path.
+
+    Terminals disagree about what follows their exec flag. xterm, konsole and
+    gnome-terminal exec the argv they are given, unchanged. terminator (which is
+    x-terminal-emulator on Debian/Ubuntu) re-joins it into a string and
+    shlex-splits that, so `-e claude "Read <path> before doing anything else."`
+    reached claude as 27 separate arguments and Claude Code took the first word
+    as the whole prompt — the agent asked "Read what?" and started work never
+    having seen the briefing. Pre-quoting into one string fixes terminator and
+    breaks the exec-argv terminals instead.
+
+    A script path is a single token with no spaces, so both families run the
+    same thing. Everything that needs quoting is quoted inside the script, where
+    only /bin/sh reads it.
+    """
+    import shlex
+
+    # Fixed name, not mkstemp: one file per user that each launch overwrites,
+    # rather than a tmp directory slowly filling with dead launchers.
+    # O_NOFOLLOW + 0700 because /tmp is world-writable — without it a symlink
+    # planted at this name turns "write our launcher" into "overwrite that".
+    path = os.path.join(tempfile.gettempdir(), f"freecad_ai_launch_{os.getuid()}.sh")
+    body = "#!/bin/sh\ncd {} || exit 1\nexec {}\n".format(
+        shlex.quote(cwd), " ".join(shlex.quote(a) for a in argv))
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+    with os.fdopen(fd, "w") as f:
+        f.write(body)
+    return path
 
 
 def _launch_cli(cli: dict) -> tuple:
@@ -547,11 +599,19 @@ def _launch_cli(cli: dict) -> tuple:
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH")}
     env["FREECAD_AI_BRIEFING"] = briefing
+    # mcp_stdio.py runs as a subprocess of the CLI with no access to FreeCAD, so
+    # it cannot read the port from settings and falls back to a hardcoded one.
+    # Publishing it here means a changed port follows the launch, inherited down
+    # the chain (terminal -> wrapper -> CLI -> MCP bridge), with no CLI config
+    # to edit.
+    from rpc_server.settings import RPC_HOST, RPC_PORT
+    env["FREECAD_RPC_URL"] = f"http://{RPC_HOST}:{RPC_PORT}"
     addon_dir = _addon_dir()
+    script = _wrapper_script(argv, addon_dir)
     for term, flag in _TERMINALS:
         if not shutil.which(term):
             continue
-        full = [term, flag, *argv] if flag else [term, *argv]
+        full = [term, flag, script] if flag else [term, script]
         try:
             subprocess.Popen(full, cwd=addon_dir, env=env)
         except OSError as e:
@@ -560,12 +620,10 @@ def _launch_cli(cli: dict) -> tuple:
         suffix = f" ({'; '.join(notes)})" if notes else ""
         return done(True, f"launched {name} in {term}{suffix}")
 
-    # ponytail: no terminal found (macOS/Windows, or a bare WM) — tell them the
-    # command instead of shipping a per-platform launcher nobody asked for.
-    return done(
-        False,
-        f"no terminal emulator found. Run this yourself:\n    cd {addon_dir} && {cmd}",
-    )
+    # ponytail: no terminal found (macOS/Windows, or a bare WM) — hand over the
+    # script instead of shipping a per-platform launcher nobody asked for. The
+    # script, not the bare command, so a hand-run launch still gets the briefing.
+    return done(False, f"no terminal emulator found. Run this yourself:\n    {script}")
 
 
 def _open_keys_page() -> None:
@@ -1184,6 +1242,17 @@ def demo() -> None:
         opening = m._BRIEFING_PROMPT.format(path=briefing_path)
         assert os.path.isabs(briefing_path) and briefing_path in opening, opening
         assert briefing_path == os.path.join(m._addon_dir(), m._BRIEFING_NAME)
+
+        # ...and it must survive the terminal as ONE argument. The wrapper is a
+        # single token so terminator's re-split cannot chop the prompt into 27
+        # words, of which the CLI would keep only "Read".
+        import subprocess
+        script = m._wrapper_script(
+            ["/bin/sh", "-c", 'echo "$#"', "sh", opening], m._addon_dir())
+        assert " " not in script, script
+        assert os.stat(script).st_mode & 0o077 == 0, "wrapper is executable, keep it private"
+        got = subprocess.run([script], capture_output=True, text=True).stdout.strip()
+        assert got == "1", f"prompt reached the CLI as {got} arguments, not 1"
         assert "call_tool" in text and "xmlrpc.client" in text, text[:400]
         registry = {t["name"] for t in tools.describe_tools()}
         for name in registry:
@@ -1193,6 +1262,9 @@ def demo() -> None:
         for called in re.findall(r'call_tool\("([a-z_0-9]+)"', text):
             assert called in registry, f"briefing example calls unknown tool {called!r}"
         assert "no sandbox" in text, "briefing must warn about execute_code"
+        # A launched CLI that is not told otherwise writes Python and imports the
+        # result, which is not what this addon is for.
+        assert "PARAMETRIC" in text and "Build with the tools above, not with Python" in text
     finally:
         (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
          m._offer_no_key, m._launch_cli, m._open_keys_page) = real
