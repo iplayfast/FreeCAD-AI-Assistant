@@ -11,6 +11,7 @@ the GUI thread. Tests pass a fake provider and fake ``run_tool``.
 """
 
 import json
+from collections import Counter
 from typing import Any, Callable
 
 from rpc_server.providers.base import Message, ProviderError
@@ -160,6 +161,8 @@ class AgentSession:
         """
         self.messages.append({"role": "user", "content": user_text})
         last_failure, repeats = None, 0
+        seen: Counter = Counter()   # (tool, arguments) -> times called this turn
+        nudged = False              # an empty reply gets one prod, not a loop
 
         for _ in range(self.max_steps):
             try:
@@ -175,6 +178,20 @@ class AgentSession:
                 yield {"type": "assistant", "text": reply.text}
 
             if reply.stop != "tools" or not reply.tool_calls:
+                # Nothing said and nothing called is not a finished turn. Small
+                # local models do this — one observed run created the document,
+                # returned an empty reply, and the loop reported success on a
+                # document with no objects in it. Ask once; a model that has
+                # genuinely finished answers by saying what it built.
+                if not (reply.text or "").strip() and not reply.tool_calls and not nudged:
+                    nudged = True
+                    self.messages.append({
+                        "role": "user",
+                        "content": ("That reply was empty. If the task is not finished, "
+                                    "continue by calling tools. If it is finished, say "
+                                    "what you built and how to check it."),
+                    })
+                    continue
                 yield {"type": "done", "stop": reply.stop}
                 return
 
@@ -186,6 +203,27 @@ class AgentSession:
                 except Exception as e:
                     result = f"{type(e).__name__}: {e}"
                     content, is_error = result, True
+
+                # A call that SUCCEEDS twice with identical arguments is as stuck
+                # as one that fails twice, and nothing used to say so. Watched
+                # live: sketch_polygon added the same outline three times, each
+                # answering "ok" with a geometry_count the model cannot read as
+                # "you now have three outlines on top of each other and this
+                # sketch can never pad". It span until max_steps and built
+                # nothing. Saying it in the tool result is what lets the model
+                # fix it itself, which a stop cannot.
+                fingerprint = (tc.name, json.dumps(tc.arguments, sort_keys=True, default=str))
+                seen[fingerprint] += 1
+                if not is_error and seen[fingerprint] > 1:
+                    content += (
+                        f"\n\n[NOTE: this is call {seen[fingerprint]} of {tc.name} with "
+                        "exactly these arguments. The earlier one already succeeded, so "
+                        "this repeated it rather than adding anything — in a sketch that "
+                        "means duplicate geometry on top of itself. Check the current "
+                        "state (get_objects, check_sketch_geometry) before continuing, "
+                        "and move on to the next step instead of repeating this one.]"
+                    )
+
                 self.messages.append({
                     "role": "tool", "tool_call_id": tc.id, "name": tc.name,
                     "content": content, "is_error": is_error,
@@ -200,6 +238,14 @@ class AgentSession:
                 signature = (tc.name, content[:200]) if is_error else None
                 repeats = repeats + 1 if signature and signature == last_failure else int(bool(signature))
                 last_failure = signature
+                if seen[fingerprint] >= STUCK_REPEATS:
+                    # Warned once already and did it again: it is not reading the
+                    # note, and every further repeat only piles up more geometry.
+                    yield {"type": "error", "message": (
+                        f"{tc.name} was called {seen[fingerprint]} times with identical "
+                        "arguments and is repeating itself rather than making progress."
+                    )}
+                    return
                 if repeats >= STUCK_REPEATS:
                     yield {"type": "error", "message": (
                         f"{tc.name} failed {repeats} times with the same error, so "
@@ -256,6 +302,54 @@ def demo() -> None:
     evs = list(s2.run("go"))
     tr = next(e for e in evs if e["type"] == "tool_result")
     assert tr["is_error"] and "boom" in tr["content"], tr
+
+    # A call repeated with identical arguments succeeds, but the result says so —
+    # the live failure this exists for was sketch_polygon adding one outline
+    # three times, told "ok" each time, spinning until the step ceiling.
+    same = ToolCall("t3", "sketch_polygon", {"points": [1, 2]})
+    replies3 = [
+        AssistantReply(tool_calls=[same], stop="tools"),
+        AssistantReply(tool_calls=[ToolCall("t4", "sketch_polygon", {"points": [1, 2]})], stop="tools"),
+        AssistantReply(text="done", stop="end"),
+    ]
+    s3 = AgentSession(_Script(replies3), lambda n, a: {"geometry_count": 9}, tools=[])
+    results = [e for e in s3.run("go") if e["type"] == "tool_result"]
+    assert "NOTE" not in results[0]["content"], results[0]["content"]
+    assert "call 2 of sketch_polygon" in results[1]["content"], results[1]["content"]
+    # ...and the note reached the model, not just the transcript.
+    assert "NOTE" in [m for m in s3.messages if m["role"] == "tool"][-1]["content"]
+
+    # Doing it a third time ends the turn: it is not reading the note, and each
+    # repeat piles up more geometry.
+    replies4 = [AssistantReply(tool_calls=[ToolCall(f"t{i}", "sketch_polygon", {"p": 1})],
+                               stop="tools") for i in range(4)]
+    s4 = AgentSession(_Script(replies4), lambda n, a: {"ok": True}, tools=[])
+    evs4 = list(s4.run("go"))
+    assert evs4[-1]["type"] == "error" and "identical arguments" in evs4[-1]["message"], evs4[-1]
+    assert sum(1 for e in evs4 if e["type"] == "tool_call") == 3, evs4
+
+    # An empty reply — no text, no tool calls — is not a finished turn. One
+    # observed run created the document, answered with nothing, and was reported
+    # as a success on a document containing no objects.
+    replies5 = [
+        AssistantReply(text="", stop="end"),
+        AssistantReply(tool_calls=[ToolCall("t9", "create_document", {"name": "D"})], stop="tools"),
+        AssistantReply(text="Built D.", stop="end"),
+    ]
+    s5 = AgentSession(_Script(replies5), lambda n, a: {"document_name": "D"}, tools=[])
+    kinds5 = [e["type"] for e in s5.run("go")]
+    assert kinds5 == ["tool_call", "tool_result", "assistant", "done"], kinds5
+    assert any("reply was empty" in m.get("content", "") for m in s5.messages), s5.messages
+
+    # ...but only one prod: an empty answer to the prod ends the turn.
+    s6 = AgentSession(_Script([AssistantReply(text="", stop="end")] * 2),
+                      lambda n, a: None, tools=[])
+    assert [e["type"] for e in s6.run("go")] == ["done"]
+
+    # A reply with text and no tool calls is a normal finish, not an empty one.
+    s7 = AgentSession(_Script([AssistantReply(text="All done.", stop="end")]),
+                      lambda n, a: None, tools=[])
+    assert [e["type"] for e in s7.run("go")] == ["assistant", "done"]
 
     # Provider failure surfaces as an error event.
     class _Fail:
