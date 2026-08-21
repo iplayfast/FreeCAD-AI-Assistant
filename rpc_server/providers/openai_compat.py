@@ -18,6 +18,10 @@ from rpc_server.providers.base import (
     post_json,
 )
 
+# Room for a reasoning model to think AND still emit its tool call. Matches the
+# Anthropic adapter's budget so the two faces behave the same.
+_MAX_TOKENS = 16000
+
 
 class OpenAICompatProvider:
     name = "openai_compat"
@@ -37,6 +41,16 @@ class OpenAICompatProvider:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": _to_openai(system, messages),
+            # Explicit, because the server's default is not ours to inherit and
+            # a reasoning model spends it before it says anything. Measured on
+            # qwen3.5:9b through Ollama: at max_tokens=20 the reply came back
+            # with empty content — all of it went on thinking — which reaches
+            # the agent loop as "no text, no tool calls" and used to be reported
+            # as a finished turn. A real build run stopped with finish_reason
+            # 'length' four calls in, having sent no limit at all. The Anthropic
+            # provider has always sent 16000; this one inheriting whatever the
+            # server felt like was the difference.
+            "max_tokens": _MAX_TOKENS,
         }
         if tools:
             payload["tools"] = [

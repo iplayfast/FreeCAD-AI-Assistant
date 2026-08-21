@@ -89,6 +89,23 @@ def demo() -> None:
     })
     assert r.text == "hi" and r.stop == "tools" and r.tool_calls[0].name == "f", r
 
+    # Every request carries an explicit reply budget. Inheriting the server's
+    # default meant a reasoning model spent it thinking and returned empty
+    # content, which the agent loop reads as a finished turn on an empty
+    # document; a real run stopped with finish_reason 'length' four calls in.
+    import rpc_server.providers.openai_compat as _oc
+
+    sent = {}
+    real_post = _oc.post_json
+    _oc.post_json = lambda url, headers, payload, timeout: (
+        sent.update(payload) or {"choices": [{"message": {"content": "ok"},
+                                              "finish_reason": "stop"}]})
+    try:
+        _oc.OpenAICompatProvider("http://x/v1", "m").complete("SYS", convo, [])
+    finally:
+        _oc.post_json = real_post
+    assert sent.get("max_tokens") == _oc._MAX_TOKENS >= 4000, sent.get("max_tokens")
+
     # OpenAI-compat: system first, assistant tool_calls, tool result by id.
     o = _to_openai("SYS", convo)
     assert o[0] == {"role": "system", "content": "SYS"}, o[0]
