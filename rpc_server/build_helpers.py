@@ -43,11 +43,23 @@ from Part import BSplineCurve, Wire
 # ---------------------------------------------------------------------------
 
 
-def fcVec(x: List[float]) -> App.Vector:
-    """Build an App.Vector from a 2- or 3-element sequence."""
-    if len(x) == 2:
-        return App.Vector(x[0], x[1], 0)
-    return App.Vector(x[0], x[1], x[2])
+def fcVec(*args) -> App.Vector:
+    """Build an App.Vector from a 2- or 3-element sequence, or from loose numbers.
+
+    ``fcVec([1, 2, 3])`` and ``fcVec(1, 2, 3)`` are the same vector. Both spellings
+    because App.Vector itself takes loose numbers, so that is what anyone writes
+    first; taking only a sequence turned the obvious call into a TypeError about
+    positional arguments, mid-``execute_code``, with the model left to guess which
+    of the two conventions this one helper wanted.
+    """
+    if len(args) == 1 and hasattr(args[0], "__len__"):
+        args = tuple(args[0])
+    if len(args) == 2:
+        return App.Vector(args[0], args[1], 0)
+    if len(args) == 3:
+        return App.Vector(*args)
+    raise ValueError(
+        f"fcVec wants 2 or 3 coordinates, or one sequence of them, got {args!r}.")
 
 
 def toPolar(x: float, y: float) -> Tuple[float, float]:
@@ -60,9 +72,12 @@ def toCart(r: float, a: float) -> Tuple[float, float]:
     return r * math.cos(a), r * math.sin(a)
 
 
-def mirrorPointsX(points: List[App.Vector]) -> List[App.Vector]:
-    """Mirror points across the Y axis (x -> -x), reversing order."""
-    return [App.Vector(-p.x, p.y, p.z) for p in reversed(points)]
+def mirrorPointsX(points) -> List[App.Vector]:
+    """Mirror points across the Y axis (x -> -x), reversing order.
+
+    Takes vectors or plain (x, y) tuples — see fcVec.
+    """
+    return [App.Vector(-p.x, p.y, p.z) for p in reversed([fcVec(p) for p in points])]
 
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
@@ -75,8 +90,9 @@ def clamp1(a: float) -> float:
     return min(1, max(a, -1))
 
 
-def vectorDistance(v1: App.Vector, v2: App.Vector) -> float:
-    """Straight-line distance between two vectors."""
+def vectorDistance(v1, v2) -> float:
+    """Straight-line distance between two vectors, or (x, y[, z]) tuples."""
+    v1, v2 = fcVec(v1), fcVec(v2)
     return math.sqrt((v2.x - v1.x) ** 2 + (v2.y - v1.y) ** 2 + (v2.z - v1.z) ** 2)
 
 
@@ -703,6 +719,21 @@ def demo() -> None:
     # Pure helpers first — no document needed.
     assert fcVec([1, 2]) == App.Vector(1, 2, 0)
     assert fcVec([1, 2, 3]) == App.Vector(1, 2, 3)
+    # Loose numbers too: App.Vector takes them, so that is what gets written
+    # first, and a TypeError mid-execute_code is an expensive way to find out
+    # this one helper disagreed.
+    assert fcVec(1, 2, 3) == App.Vector(1, 2, 3)
+    assert fcVec(1, 2) == App.Vector(1, 2, 0)
+    assert fcVec((1, 2, 3)) == fcVec(App.Vector(1, 2, 3)) == App.Vector(1, 2, 3)
+    try:
+        fcVec(1, 2, 3, 4)
+        raise AssertionError("expected a ValueError naming what fcVec wants")
+    except ValueError as e:
+        assert "2 or 3 coordinates" in str(e), e
+    # The helpers that take points accept the same two spellings.
+    assert vectorDistance((0, 0), (3, 4)) == 5.0
+    assert vectorDistance(App.Vector(0, 0, 0), App.Vector(0, 0, 2)) == 2.0
+    assert mirrorPointsX([(1, 2), (3, 4)]) == [App.Vector(-3, 4, 0), App.Vector(-1, 2, 0)]
     r, a = toPolar(0, 5)
     assert round(r, 9) == 5 and round(a, 9) == round(math.pi / 2, 9)
     x, y = toCart(*toPolar(3, 4))
