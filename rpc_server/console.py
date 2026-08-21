@@ -75,10 +75,15 @@ _DEFAULT_MODEL_CHOICE = "(provider default)"
 # line that tell whatever gets launched what it is connected to.
 _SHELL_CHOICE = "Shell command (external CLI)"
 _BRIEFING_NAME = "AGENT_BRIEFING.md"
+# Absolute, because "this directory" is only true if the CLI actually starts in
+# the addon directory — and a CLI that resumes a previous session, or that a
+# terminal drops in $HOME, sees a name that matches nothing and asks "read
+# what?" instead of reading the briefing. The path is computed per launch: the
+# addon directory moves with the FreeCAD version (…/Mod/AI under whichever
+# v<N>-<M> is installed), so it cannot be baked in here.
 _BRIEFING_PROMPT = (
-    "Read AGENT_BRIEFING.md in this directory before doing anything else. It "
-    "describes the live FreeCAD session you are driving, the port to reach it "
-    "on, and the tools you can call."
+    "Read {path} before doing anything else. It describes the live FreeCAD "
+    "session you are driving, the port to reach it on, and the tools you can call."
 )
 
 _KEYS_URL = "https://console.anthropic.com/settings/keys"
@@ -520,15 +525,16 @@ def _launch_cli(cli: dict) -> tuple:
         )
 
     briefing = write_briefing(cli)
+    prompt = _BRIEFING_PROMPT.format(path=briefing)
     # The briefing is handed over two ways because no single one reaches every
     # CLI: an opening prompt for the ones whose flag we know, and an env var that
     # any command can read.
     if cli.get("prompt_flag"):
-        argv += [cli["prompt_flag"], _BRIEFING_PROMPT]
+        argv += [cli["prompt_flag"], prompt]
     elif cli.get("config"):     # a known CLI: takes its opening prompt positionally
-        argv.append(_BRIEFING_PROMPT)
+        argv.append(prompt)
     else:
-        notes.append(f"read $FREECAD_AI_BRIEFING ({os.path.basename(briefing)})")
+        notes.append(f"read $FREECAD_AI_BRIEFING ({briefing})")
 
     # Running from the AppImage, os.environ carries PYTHONHOME/PYTHONPATH/
     # LD_LIBRARY_PATH pointing into its private, per-launch mount (e.g.
@@ -1168,8 +1174,16 @@ def demo() -> None:
 
         # The briefing has to carry the three things an external agent cannot
         # guess: where to connect, how, and what it may call.
-        text = open(m.write_briefing(), encoding="utf-8").read()
+        briefing_path = m.write_briefing()
+        text = open(briefing_path, encoding="utf-8").read()
         assert f"{RPC_HOST}:{RPC_PORT}" in text, "briefing must name the port"
+
+        # The opening prompt must point at the briefing by absolute path: a CLI
+        # that does not start in the addon directory cannot resolve a bare name,
+        # and the addon directory moves with the FreeCAD version.
+        opening = m._BRIEFING_PROMPT.format(path=briefing_path)
+        assert os.path.isabs(briefing_path) and briefing_path in opening, opening
+        assert briefing_path == os.path.join(m._addon_dir(), m._BRIEFING_NAME)
         assert "call_tool" in text and "xmlrpc.client" in text, text[:400]
         registry = {t["name"] for t in tools.describe_tools()}
         for name in registry:
