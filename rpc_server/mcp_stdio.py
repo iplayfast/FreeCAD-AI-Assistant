@@ -21,12 +21,16 @@ See ``README.md`` for the exact config location per CLI.
 """
 
 import json
+import os
 import sys
 import xmlrpc.client
 
 # Must match rpc_server.settings.RPC_HOST/RPC_PORT. Duplicated rather than
-# imported: that module pulls in FreeCAD, which this process never has.
-RPC_URL = "http://127.0.0.1:9875"
+# imported: that module pulls in FreeCAD, which this process never has — so
+# nothing here notices when the port is changed there, and the bridge just
+# talks to a closed socket. $FREECAD_RPC_URL is the escape hatch: whoever
+# changes the port sets it, and no CLI config has to be edited.
+RPC_URL = os.environ.get("FREECAD_RPC_URL") or "http://127.0.0.1:9875"
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "freecad", "version": "1.0.0"}
@@ -46,6 +50,23 @@ def _unreachable(e: Exception) -> str:
 
 def _text_result(text: str, is_error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
+
+
+def _tool_content(result) -> list:
+    """Shape a handler's return value into MCP content blocks.
+
+    An image comes back from the registry as {"mime_type", "data"} with the PNG
+    base64-encoded. JSON-dumped into a text block — which is what everything used
+    to get — that is a few hundred KB of base64 the model cannot decode: the one
+    tool that lets an agent SEE what it built delivered nothing it could look at.
+    MCP has an image block; use it.
+    """
+    if (isinstance(result, dict) and result.get("data")
+            and str(result.get("mime_type", "")).startswith("image/")):
+        return [{"type": "image", "data": result["data"],
+                 "mimeType": result["mime_type"]}]
+    return [{"type": "text",
+             "text": result if isinstance(result, str) else json.dumps(result)}]
 
 
 def _handle(req: dict) -> dict | None:
@@ -99,9 +120,9 @@ def _handle(req: dict) -> dict | None:
         if not resp.get("success"):
             return {"jsonrpc": "2.0", "id": req_id,
                      "result": _text_result(str(resp.get("error")), True)}
-        result = resp.get("result")
-        text = result if isinstance(result, str) else json.dumps(result)
-        return {"jsonrpc": "2.0", "id": req_id, "result": _text_result(text)}
+        return {"jsonrpc": "2.0", "id": req_id,
+                "result": {"content": _tool_content(resp.get("result")),
+                           "isError": False}}
 
     return {"jsonrpc": "2.0", "id": req_id,
              "error": {"code": -32601, "message": f"method not found: {method}"}}
@@ -152,6 +173,20 @@ def demo() -> None:
                            "params": {"name": "ping_tool", "arguments": {}}})
         assert called["result"]["isError"] is False
         assert '"ok": true' in called["result"]["content"][0]["text"]
+
+        # A screenshot must arrive as an image block, not as base64 in text —
+        # otherwise the agent cannot see what it built.
+        fake.call_tool = lambda name, args: {
+            "success": True, "result": {"mime_type": "image/png", "data": "iVBOR"}}
+        shot = _handle({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                         "params": {"name": "get_active_screenshot", "arguments": {}}})
+        assert shot["result"]["content"] == [
+            {"type": "image", "data": "iVBOR", "mimeType": "image/png"}], shot
+        # ...but a dict that merely has a "data" key is still text.
+        fake.call_tool = lambda name, args: {"success": True, "result": {"data": [1, 2]}}
+        plain = _handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                          "params": {"name": "whatever", "arguments": {}}})
+        assert plain["result"]["content"][0]["type"] == "text", plain
 
         unknown = _handle({"jsonrpc": "2.0", "id": 4, "method": "nope"})
         assert unknown["error"]["code"] == -32601
