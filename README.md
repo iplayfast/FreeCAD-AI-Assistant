@@ -221,9 +221,29 @@ own. There is no test framework and none is wanted — match the convention.
 Run all of them, in about a second:
 
 ```bash
-freecadcmd run_checks.py    # all 11 modules; exits non-zero if any fail
+freecadcmd run_checks.py    # all 13 modules; exits non-zero if any fail
 python3 run_checks.py       # the 4 that need no FreeCAD; skips the rest
 ```
+
+Those check the code. To check whether a *model* can actually drive it:
+
+```bash
+python3 run_agent_suite.py            # bearing, bolt, bracket, arm
+python3 run_agent_suite.py bracket    # one of them
+```
+
+Each task runs a real turn against the provider in your settings, in its own
+FreeCAD, and passes only if the finished document contains solids — never
+because the model said it was done. The report ranks the errors across all
+tasks, because they are not one-offs: a model that says `object_name` to one
+tool says it to the next. Every failure fixed in this addon before the suite
+existed arrived as a traceback pasted out of the GUI, one per manual run.
+
+It is slower than the unit checks (real inference, minutes) and its verdicts
+move with the model, so it is a tool for finding the next class of bug rather
+than a gate. The first run found two: a duplicated sketch outline reported as
+success three times in a row, and an empty model reply reported as a completed
+turn on an empty document.
 
 Individual ones still work the old way (`python3 rpc_server/tools.py`,
 `python3 rpc_server/mcp_stdio.py --demo`, or `from rpc_server.console import

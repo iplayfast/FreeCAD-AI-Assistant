@@ -25,3 +25,5 @@ test_bearing_exit
 dimensions.txt
 FreeCAD-Documentation-Project
 .gstack/
+suite_logs/
+suite_logs_baseline/
