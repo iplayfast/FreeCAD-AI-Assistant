@@ -633,6 +633,19 @@ def execute_code(code: str, doc_name: str = "") -> dict:
                 f"{exc}. FreeCAD documents have no setVariable method. "
                 "Use vs = readyVars(doc); addVar(vs, 'Name', value)."
             ) from None
+        # Reaching for an OBJECT through the document — doc.VarSet, doc.Body,
+        # doc.Object — is the single most common thing a model gets wrong in
+        # here (9 of 21 errors across a four-task suite run), and the generic
+        # "add the property first" answer below is advice for a different
+        # problem entirely: it wants to FIND something, not create a property.
+        if "'App.Document' object has no attribute" in text:
+            raise AttributeError(
+                f"{exc}. A document does not expose its objects as attributes. "
+                "Look one up by name — doc.getObject('Vars') — or by type: "
+                "next(o for o in doc.Objects if o.TypeId == 'App::VarSet'). "
+                "For the VarSet specifically, readyVars(doc) returns it and "
+                "creates it if absent."
+            ) from None
         if "object has no attribute" in text and "App." in text:
             raise AttributeError(
                 f"{exc}. A FreeCAD object only has the properties it was given. "
@@ -1037,6 +1050,13 @@ def demo() -> None:
             raise AssertionError(f"expected a failure from {code!r}")
 
         assert "already in scope" in fails("import Gui"), fails("import Gui")
+
+        # Reaching for an object through the document is the commonest mistake
+        # in here; the answer is how to look one up, not how to add a property.
+        msg = fails("doc = App.newDocument('HintProbe'); doc.VarSet")
+        assert "does not expose its objects as attributes" in msg, msg
+        assert "doc.getObject(" in msg and "readyVars(doc)" in msg, msg
+        FreeCAD.closeDocument("HintProbe")
         msg = fails("Sketcher.addCircle(None, 5)")
         # The name worth naming is the missing attribute, not the module it was
         # looked for on.
