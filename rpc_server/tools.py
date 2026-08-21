@@ -21,8 +21,24 @@ the thread where FreeCAD document mutation is legal (the GUI thread). The caller
 """
 
 import contextlib
+import difflib
 from dataclasses import dataclass
 from typing import Any, Callable
+
+# Argument names models reach for, mapped to the schema's spelling. Applied only
+# where the canonical name is actually accepted, so "object_name" becomes
+# obj_name on a tool that has one and stays an error (with a suggestion) on a
+# tool that does not.
+_ARG_SYNONYMS = {
+    "doc": "doc_name",
+    "document": "doc_name",
+    "document_name": "doc_name",
+    "object": "obj_name",
+    "object_name": "obj_name",
+    "view": "view_name",
+    "sketch": "sketch_name",
+    "body": "body_name",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +97,22 @@ PROFILES: dict[str, set | None] = {
     "BIM": {"core", "bim"},
     "Core + extras": {"core", "extras"},
 }
+
+
+def _closest(wanted: str, options: list) -> str:
+    """The argument name ``wanted`` was probably meant to be, or "".
+
+    Spelling distance first, then a shared word — "object_name" is not close
+    enough to "focus_object" by edit distance, but they are plainly about the
+    same thing, and that is the pair a model driving a screenshot tool actually
+    gets wrong.
+    """
+    close = difflib.get_close_matches(wanted, options, n=1, cutoff=0.6)
+    if close:
+        return close[0]
+    words = set(wanted.split("_"))
+    shared = [o for o in options if words & set(o.split("_"))]
+    return shared[0] if len(shared) == 1 else ""
 
 
 def register(name: str, description: str, parameters: dict[str, Any]) -> Callable:
@@ -228,9 +260,31 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
     required = tool.parameters.get("required", [])
 
     # Pure synonyms for the SAME value, so they may satisfy a required argument.
-    for synonym in ("doc", "document"):
-        if synonym in args and "doc_name" in accepted and "doc_name" not in args:
-            args["doc_name"] = args.pop(synonym)
+    # Every entry is a name a model actually sent: they are the obvious English
+    # for what the schema calls something else, and rejecting them taught nothing
+    # except that this tool is fussy.
+    for synonym, canonical in _ARG_SYNONYMS.items():
+        if synonym in args and canonical in accepted and canonical not in args:
+            args[canonical] = args.pop(synonym)
+
+    # Unknown keys BEFORE missing ones. A model that sent object_name= where
+    # obj_name was wanted used to be told only "missing obj_name", with its own
+    # near-miss never mentioned — so it had to guess which of the accepted names
+    # its value belonged to, and guessed again next call.
+    unknown = [k for k in args if k not in accepted]
+    if unknown:
+        # Unknown keys used to reach the handler and surface as a bare
+        # "got an unexpected keyword argument 'x'" TypeError, which names the
+        # Python function rather than the tool and never says what IS accepted.
+        free = [a for a in accepted if a not in args]
+        detail = ", ".join(
+            k + (f" (did you mean {guess}?)" if (guess := _closest(k, free)) else "")
+            for k in unknown
+        )
+        raise ValueError(
+            f"tool '{name}' got unknown argument(s): {detail}; "
+            f"accepts: {', '.join(accepted) or 'no arguments'}"
+        )
 
     missing = [k for k in required if k not in args]
     if missing:
@@ -257,16 +311,6 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
             args[b] = args[a]
         elif b in args and a not in args and a in accepted:
             args[a] = args[b]
-
-    # Unknown keys used to reach the handler and surface as a bare
-    # "got an unexpected keyword argument 'x'" TypeError, which names the
-    # Python function rather than the tool and never says what IS accepted.
-    unknown = [k for k in args if k not in accepted]
-    if unknown:
-        raise ValueError(
-            f"tool '{name}' got unknown argument(s): {', '.join(unknown)}; "
-            f"accepts: {', '.join(accepted) or 'no arguments'}"
-        )
 
     with transaction(name):
         return tool.handler(**args)
@@ -404,6 +448,58 @@ def demo() -> None:
             assert False, "expected ValueError"
         except ValueError as e:
             assert "accepts: text" in str(e), e
+
+        # A near-miss name is named as such. Reported BEFORE "missing text",
+        # because being told only what is absent leaves the caller to guess
+        # which accepted name the value it did send belonged to.
+        try:
+            call_tool("echo", {"txt": "hi"})
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "did you mean text?" in str(e), e
+            assert "missing" not in str(e), e
+
+        # Synonyms are accepted outright where the real name exists...
+        @register(
+            "measure",
+            "Measure something.",
+            {
+                "type": "object",
+                "properties": {"doc_name": {"type": "string"},
+                               "obj_name": {"type": "string"}},
+                "required": ["doc_name", "obj_name"],
+            },
+        )
+        def _measure(doc_name: str, obj_name: str) -> tuple:
+            return (doc_name, obj_name)
+
+        assert call_tool("measure", {"document": "D", "object_name": "O"}) == ("D", "O")
+        # ...and where it does not, the error suggests the right one rather than
+        # reporting the required argument as simply absent.
+        try:
+            call_tool("pick", {"object_name": "O", "name": "bim"})
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "object_name" in str(e), e
+
+        # A shared word is enough when spelling distance is not: this is the
+        # real pair, object_name passed to a screenshot tool wanting focus_object.
+        @register(
+            "shot",
+            "Screenshot.",
+            {"type": "object",
+             "properties": {"view_name": {"type": "string"},
+                            "focus_object": {"type": "string"}}},
+        )
+        def _shot(view_name: str = "", focus_object: str = "") -> str:
+            return focus_object
+
+        try:
+            call_tool("shot", {"object_name": "Bolt", "view": "Isometric"})
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert "did you mean focus_object?" in str(e), e
+            assert "view" not in str(e).split(";")[0], f"view= is a synonym: {e}"
 
         # unknown tool
         try:
