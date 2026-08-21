@@ -155,17 +155,33 @@ def describe_tools(profile: str = None) -> list[dict[str, Any]]:
     ]
 
 
+# A tool whose name starts with one of these only reads — it answers a question
+# about the document, the wiki, or the bundled docs. Opening a transaction for
+# one leaves no undo entry (setActiveTransaction is lazy) but still prints an
+# AutoTransaction line to the report view, so a session that looks things up
+# fills the log with noise about transactions that never happened.
+# Deliberately narrow: check_/measure_/cross_ are left out because they can
+# recompute, and a recompute belongs in an undo step.
+_READ_ONLY_PREFIXES = ("get_", "list_", "search_", "lookup_")
+
+
+def is_read_only(name: str) -> bool:
+    return name.startswith(_READ_ONLY_PREFIXES)
+
+
 @contextlib.contextmanager
 def transaction(name: str):
     """Group everything inside into one undo step, rolled back if it raises.
 
-    ``setActiveTransaction`` is lazy — it only opens a real transaction once a
-    document is actually modified — so wrapping read-only tools costs nothing
-    and leaves no empty entries in the undo stack.
+    Read-only tools (see ``is_read_only``) skip the transaction entirely.
 
     Imported lazily so the registry stays usable (and ``demo`` runnable) without
     FreeCAD; outside FreeCAD this is a no-op.
     """
+    if is_read_only(name):
+        yield
+        return
+
     try:
         import FreeCAD
     except ImportError:
@@ -207,8 +223,15 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
 
     missing = [k for k in required if k not in args]
     if missing:
+        # Spell out the legal values for anything enumerated: "missing: name;
+        # accepts: name" told the caller nothing it did not already know.
+        detail = ", ".join(
+            k + (" (one of: " + ", ".join(accepted[k]["enum"]) + ")"
+                 if accepted.get(k, {}).get("enum") else "")
+            for k in missing
+        )
         raise ValueError(
-            f"tool '{name}' missing required argument(s): {', '.join(missing)}; "
+            f"tool '{name}' missing required argument(s): {detail}; "
             f"accepts: {', '.join(accepted) or 'no arguments'}"
         )
 
@@ -285,6 +308,26 @@ def demo() -> None:
         except ValueError as e:
             assert "text" in str(e)
 
+        # a missing enumerated arg names its legal values, so the caller can
+        # retry without a second round trip
+        @register(
+            "pick",
+            "Pick one.",
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string", "enum": ["bim", "sheetmetal"]}},
+                "required": ["name"],
+            },
+        )
+        def _pick(name: str) -> str:
+            return name
+
+        try:
+            call_tool("pick", {})
+            assert False, "expected ValueError for missing 'name'"
+        except ValueError as e:
+            assert "one of: bim, sheetmetal" in str(e), e
+
         # unknown argument: named as a tool argument, listing what is accepted,
         # rather than a bare TypeError naming the Python function.
         try:
@@ -324,6 +367,10 @@ def demo() -> None:
         # transaction() is a no-op without FreeCAD, and re-raises either way.
         with transaction("noop"):
             pass
+
+        # Read-only tools skip the transaction; anything that can write gets one.
+        assert is_read_only("get_skill") and is_read_only("list_documents")
+        assert not is_read_only("pad") and not is_read_only("check_shape")
         try:
             with transaction("boom"):
                 raise RuntimeError("x")

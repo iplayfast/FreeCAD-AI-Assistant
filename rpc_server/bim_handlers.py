@@ -401,14 +401,31 @@ def search_wiki(query: str) -> dict:
     }
 
 
+def _skill_names() -> list[str]:
+    """Names of the bundled skills, straight off disk."""
+    skills_dir = os.path.join(_ADDON_DIR, "skills")
+    return sorted(f[:-3] for f in os.listdir(skills_dir) if f.endswith(".md"))
+
+
+# The names go in the schema, not just the prose: without them models guess
+# ("list", "help") or omit `name` entirely and burn a round trip on the error.
+_SKILLS = _skill_names()
+
+
 @register(
     "get_skill",
     "Read a bundled workflow guide — step-by-step recipes and worked code for "
     "one area of FreeCAD. Call this before starting that kind of job, not after "
-    "getting stuck.",
+    "getting stuck. The only guides that exist are: " + ", ".join(_SKILLS) + ".",
     {
         "type": "object",
-        "properties": {"name": {"type": "string", "description": "Skill name, e.g. 'bim'."}},
+        "properties": {
+            "name": {
+                "type": "string",
+                "enum": _SKILLS,
+                "description": "Skill name. One of: " + ", ".join(_SKILLS),
+            }
+        },
         "required": ["name"],
     },
 )
@@ -417,8 +434,8 @@ def get_skill(name: str) -> dict:
     safe = os.path.basename(name).lower()
     path = os.path.join(skills_dir, f"{safe}.md")
     if not os.path.exists(path):
-        available = sorted(f[:-3] for f in os.listdir(skills_dir) if f.endswith(".md"))
-        raise ValueError(f"No skill named '{safe}'. Available: {', '.join(available)}")
+        raise ValueError(
+            f"No skill named '{safe}'. Available: {', '.join(_skill_names())}")
     with open(path, encoding="utf-8") as f:
         return {"skill": safe, "content": f.read()}
 
