@@ -321,7 +321,7 @@ def external_clis() -> dict:
     return choices
 
 
-def write_briefing() -> str:
+def write_briefing(cli: dict = None) -> str:
     """Write the file an external agent CLI reads to learn what it is driving.
 
     A CLI launched from the panel arrives knowing nothing: it has to be told that
@@ -329,6 +329,10 @@ def write_briefing() -> str:
     call. A file rather than an argv prompt because the tool list runs to a few
     thousand characters — and because the user can read it too when a run goes
     sideways. Regenerated on every launch, so the tool list can never go stale.
+
+    ``cli`` is the launched CLI's preset (see ``_PRESETS``), used only to decide
+    whether to include the "register the MCP server" section below — omitted
+    when called outside a launch (e.g. by tests).
     """
     from rpc_server import tools
     from rpc_server.settings import RPC_HOST, RPC_PORT
@@ -367,6 +371,30 @@ def write_briefing() -> str:
         "Preferred: the `freecad` MCP server, if it is registered with you. Its",
         "tools are the ones listed below and need no setup beyond that entry.",
         "",
+    ]
+    if cli and cli.get("config") and not _has_freecad_mcp(cli["config"]):
+        mcp_script = os.path.join(_addon_dir(), "rpc_server", "mcp_stdio.py")
+        is_toml = cli["config"].endswith(".toml")
+        snippet = (
+            f'[mcp_servers.freecad]\ncommand = "python3"\nargs = ["{mcp_script}"]'
+            if is_toml else
+            f'{{"mcpServers": {{"freecad": {{"command": "python3", "args": ["{mcp_script}"]}}}}}}'
+        )
+        lines += [
+            f"It isn't registered with {cli['name']} yet, so you have no native tools",
+            "and must fall back to the XML-RPC calls below — which works, but every",
+            "call costs you a paragraph of Python instead of one tool call. Registering",
+            f"it is one-time, in {cli['config']}:",
+            "",
+            "```" + ("toml" if is_toml else "json"),
+            snippet,
+            "```",
+            "",
+            "Add that, restart this CLI, and `freecad` tools appear directly — no",
+            "more XML-RPC needed for the rest of this session, or any future one.",
+            "",
+        ]
+    lines += [
         f"Otherwise, talk to the XML-RPC server on **{url}** (loopback only).",
         f"Status at launch: **{'RUNNING' if running else 'NOT RUNNING'}**.",
         "" if running else
@@ -487,11 +515,11 @@ def _launch_cli(cli: dict) -> tuple:
     notes = []
     if cli.get("config") and not _has_freecad_mcp(cli["config"]):
         notes.append(
-            f"no 'freecad' MCP server in {cli['config']}, so {name} must use the "
-            "RPC port described in the briefing"
+            f"no 'freecad' MCP server in {cli['config']} — briefing explains how to "
+            "register one so future launches skip the RPC fallback"
         )
 
-    briefing = write_briefing()
+    briefing = write_briefing(cli)
     # The briefing is handed over two ways because no single one reaches every
     # CLI: an opening prompt for the ones whose flag we know, and an env var that
     # any command can read.

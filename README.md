@@ -178,6 +178,32 @@ fc.call_tool("create_object", {"doc_name": "Demo", "obj_type": "Part::Box",
                                "obj_name": "Box", "properties": {"Length": 10}})
 ```
 
+### MCP over stdio
+
+`rpc_server/mcp_stdio.py` is a standalone bridge: an MCP-speaking CLI runs it as
+a subprocess and gets `tools/list`/`tools/call` forwarded to the XML-RPC server
+above, so the registry's tools appear as native tool calls instead of hand-written
+XML-RPC Python. It needs no FreeCAD import and no third-party package — plain
+stdlib `xmlrpc.client`, spawned with the system's own `python3` — but the RPC
+server above still has to be running to answer it.
+
+Register it in the CLI's MCP config:
+
+```json
+{"mcpServers": {"freecad": {"command": "python3", "args": ["<addon dir>/rpc_server/mcp_stdio.py"]}}}
+```
+
+or, for a TOML config (Codex CLI):
+
+```toml
+[mcp_servers.freecad]
+command = "python3"
+args = ["<addon dir>/rpc_server/mcp_stdio.py"]
+```
+
+A CLI launched without this pre-registered gets the exact snippet, filled in
+with its own config path, at the top of `AGENT_BRIEFING.md`.
+
 ### Security
 
 The server is bound to loopback and must stay there: `execute_code` runs
@@ -194,6 +220,7 @@ own. There is no test framework and none is wanted — match the convention.
 
 ```bash
 python3 rpc_server/tools.py                                  # registry, offline
+python3 rpc_server/mcp_stdio.py --demo                       # MCP bridge dispatch, offline
 python3 -c "from rpc_server.providers import demo; demo()"   # providers, offline
 python3 -c "from rpc_server.agent import demo; demo()"       # agent loop, offline
 ```
