@@ -123,6 +123,17 @@ def demo() -> None:
     r5 = _from_openai({"choices": [{"message": {"content": "Created the box."}}]})
     assert r5.stop == "end" and r5.tool_calls == [], r5
 
+    # A response cut off by the context/token limit (Ollama's "length") must
+    # not look like a clean finish — even partial, unparseable JSON left
+    # behind by the cutoff is still surfaced as "length", not "end".
+    r6 = _from_openai({"choices": [{"message": {
+        "content": '{"name": "create_document", "arguments": {"na',
+    }, "finish_reason": "length"}]})
+    assert r6.stop == "length" and r6.tool_calls == [], r6
+
+    r7 = _from_openai({"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]})
+    assert r7.stop == "refusal", r7
+
     # Wire tap: installed, called with both directions, and never able to break
     # the request it observes.
     from rpc_server.providers import base as _base

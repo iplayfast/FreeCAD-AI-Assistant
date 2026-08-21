@@ -55,6 +55,13 @@ ALWAYS_SELECTED = ("list_documents", "create_document", "execute_code")
 # the same error three times running is what that looks like.
 STUCK_REPEATS = 3
 
+# A "done" whose reply was cut off rather than finished on its own: the model
+# ran out of context/token budget ("length") or was blocked ("refusal"). Either
+# console or panel face shows this even when the model said *something* — a
+# response truncated mid-sentence (or mid-tool-call-JSON) is not the same as a
+# clean finish just because a few words made it out before the cutoff.
+INCOMPLETE_STOPS = {"length", "refusal"}
+
 
 def _summary(tool: dict, limit: int = 90) -> str:
     """First sentence of a description, for the selection catalogue."""

@@ -30,7 +30,7 @@ except ImportError:
     )
     from PySide.QtCore import QEvent, QObject, Qt, QThread, Signal
 
-from rpc_server.agent import AgentSession, select_tools
+from rpc_server.agent import AgentSession, INCOMPLETE_STOPS, select_tools
 from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
 from rpc_server.providers import ProviderError, make_provider, set_wire_logger
 from rpc_server.settings import load_settings, save_settings
@@ -805,9 +805,15 @@ class AIChatPanel(QDockWidget):
             hint = self._error_hint(event["message"])
             if hint:
                 self._say_system(hint)
-        elif kind == "done" and not self._said_something:
-            # A clean finish and a stall look identical otherwise.
-            self._say_system(f"(finished without a summary, stop={event['stop']})")
+        elif kind == "done" and (
+            not self._said_something or event["stop"] in INCOMPLETE_STOPS
+        ):
+            # A clean finish and a stall look identical otherwise, and a reply
+            # cut off mid-sentence is not "finished" just because a few words
+            # of it made it out before the model ran out of room.
+            stop = event["stop"]
+            label = "cut off" if stop in INCOMPLETE_STOPS else "finished without a summary"
+            self._say_system(f"({label}, stop={stop})")
 
     @staticmethod
     def _error_hint(message: str) -> str:

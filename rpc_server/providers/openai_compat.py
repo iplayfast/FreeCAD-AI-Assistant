@@ -87,7 +87,8 @@ def _to_openai(system: str, messages: list[Message]) -> list[dict]:
 
 def _from_openai(resp: dict) -> AssistantReply:
     try:
-        message = resp["choices"][0]["message"]
+        choice = resp["choices"][0]
+        message = choice["message"]
     except (KeyError, IndexError) as e:
         raise ProviderError(f"unexpected chat-completions response: {e}") from None
     text = message.get("content") or ""
@@ -105,7 +106,16 @@ def _from_openai(resp: dict) -> AssistantReply:
         if recovered:
             tool_calls, text = [recovered], ""
 
-    stop = "tools" if tool_calls else "end"
+    if tool_calls:
+        stop = "tools"
+    else:
+        # A response cut off by the context/token limit (Ollama's "length",
+        # same idea under other names elsewhere) looked identical to a clean
+        # finish before this: any tool-call JSON it was mid-writing failed to
+        # parse above, same as a genuine empty reply, and nothing downstream
+        # could tell "the model ran out of room" from "the model is done".
+        finish_reason = choice.get("finish_reason")
+        stop = {"length": "length", "content_filter": "refusal"}.get(finish_reason, "end")
     return AssistantReply(text=text, tool_calls=tool_calls, stop=stop)
 
 

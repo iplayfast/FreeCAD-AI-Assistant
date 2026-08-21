@@ -21,7 +21,7 @@ import threading
 
 import FreeCAD
 
-from rpc_server.agent import AgentSession
+from rpc_server.agent import AgentSession, INCOMPLETE_STOPS
 from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump, post_to_gui
 from rpc_server.providers import ProviderError, get_json, make_provider, set_wire_logger
 from rpc_server.settings import load_settings, save_settings
@@ -876,11 +876,12 @@ def AI(prompt: str) -> None:
                 post_to_gui(lambda e=event: _print_event(e))
                 if event["type"] == "assistant" and event["text"].strip():
                     said_something = True
-                if event["type"] == "done" and not said_something:
+                if event["type"] == "done" and (
+                    not said_something or event["stop"] in INCOMPLETE_STOPS
+                ):
                     stop = event["stop"]
-                    post_to_gui(
-                        lambda s=stop: _emit(f"[AI] (finished without a summary, stop={s})")
-                    )
+                    label = "cut off" if stop in INCOMPLETE_STOPS else "finished without a summary"
+                    post_to_gui(lambda s=stop, lbl=label: _emit(f"[AI] ({lbl}, stop={s})"))
         except Exception as e:
             # A worker thread dying silently is the worst outcome: the transcript
             # would simply stop with no indication anything went wrong.
