@@ -90,6 +90,27 @@ _BRIEFING_PROMPT = (
 
 _KEYS_URL = "https://console.anthropic.com/settings/keys"
 
+# How much a launched CLI may do without stopping to ask, chosen by the
+# ai_cli_permissions setting. The middle option is the one worth having: a
+# session driving FreeCAD makes dozens of tool calls, and confirming `pad` for
+# the fortieth time teaches the user to confirm everything without reading it —
+# but execute_code is not `pad`. It runs unsandboxed Python inside the FreeCAD
+# process, which is to say it can do anything to the machine, so it stays behind
+# a prompt while the modelling tools do not. --disallowedTools wins over
+# --allowedTools, which is what makes that split expressible in one launch.
+MCP_SERVER_NAME = "freecad"
+CLI_PERMISSIONS = {
+    "ask": [],
+    "freecad": ["--allowedTools", f"mcp__{MCP_SERVER_NAME}",
+                "--disallowedTools", f"mcp__{MCP_SERVER_NAME}__execute_code"],
+    "skip": ["--dangerously-skip-permissions"],
+}
+_PERMISSION_LABELS = {
+    "ask": "Ask every time (default)",
+    "freecad": "Don't ask for FreeCAD tools (except execute_code)",
+    "skip": "Don't ask for anything — dangerous",
+}
+
 # Terminal emulators and the flag each uses to run a command, most-portable
 # first. ponytail: a lookup table, not a plugin system — every one of these
 # takes `<term> <flag> claude`, so the launcher is one Popen.
@@ -510,6 +531,46 @@ def launch_agent_cli(cli: dict = None) -> tuple:
     return ok, f"{started} {message}"
 
 
+def _permission_flags(cli: dict, has_mcp: bool, notes: list) -> list:
+    """The flags for the configured ai_cli_permissions, or none, saying why.
+
+    Appends to ``notes`` whenever the chosen mode does not apply, because a
+    setting that silently does nothing is worse than the prompts it was meant
+    to remove: the user stops watching, having been told they need not.
+    """
+    mode = load_settings().get("ai_cli_permissions", "ask")
+    flags = CLI_PERMISSIONS.get(mode)
+    if flags is None:
+        notes.append(f"unknown ai_cli_permissions {mode!r}, asking for everything")
+        return []
+    if not flags:
+        return []
+    if not cli.get("config"):
+        # A bare shell command: we do not know its flags, and guessing at
+        # another program's permission model is how you disable the wrong one.
+        notes.append(f"ai_cli_permissions={mode!r} ignored: unknown CLI's flags")
+        return []
+    if mode == "freecad" and not has_mcp:
+        # On the XML-RPC fallback there are no mcp__freecad tools to allow — the
+        # agent reaches FreeCAD through Bash and python, which this does not
+        # touch. Allowing a tool namespace that is not in play looks like it
+        # worked and changes nothing.
+        notes.append(
+            "ai_cli_permissions='freecad' needs the MCP server registered; "
+            "without it the agent works through Bash and still asks")
+        return []
+    if mode == "skip" and os.geteuid() == 0:
+        # Claude Code refuses to start with it as root, and the launch would
+        # fail in a terminal that closes before anyone reads why.
+        notes.append("ai_cli_permissions='skip' not available as root")
+        return []
+    # Said out loud on every launch it applies to. Handing an agent unattended
+    # permissions is a thing the user should see happen, not a setting they
+    # ticked once and forgot.
+    notes.append(f"permissions: {_PERMISSION_LABELS[mode]}")
+    return list(flags)
+
+
 def _wrapper_script(argv: list, cwd: str) -> str:
     """Write a one-token launcher for the terminal to run, and return its path.
 
@@ -570,12 +631,14 @@ def _launch_cli(cli: dict) -> tuple:
         return done(False, f"`{argv[0]}` not found on PATH — install {name} first.")
 
     notes = []
-    if cli.get("config") and not _has_freecad_mcp(cli["config"]):
+    has_mcp = bool(cli.get("config")) and _has_freecad_mcp(cli["config"])
+    if cli.get("config") and not has_mcp:
         notes.append(
             f"no 'freecad' MCP server in {cli['config']} — briefing explains how to "
             "register one so future launches skip the RPC fallback"
         )
 
+    argv += _permission_flags(cli, has_mcp, notes)
     briefing = write_briefing(cli)
     prompt = _BRIEFING_PROMPT.format(path=briefing)
     # The briefing is handed over two ways because no single one reaches every
@@ -1253,6 +1316,50 @@ def demo() -> None:
         assert os.stat(script).st_mode & 0o077 == 0, "wrapper is executable, keep it private"
         got = subprocess.run([script], capture_output=True, text=True).stdout.strip()
         assert got == "1", f"prompt reached the CLI as {got} arguments, not 1"
+
+        # Permission modes. The middle one is only worth having if it keeps
+        # execute_code behind a prompt, so that is what is asserted.
+        claude = {"cmd": "claude", "name": "Claude Code", "config": "~/.claude.json"}
+        saved_settings = m.load_settings
+        try:
+            for mode, expect in (("ask", []),
+                                 ("freecad", ["--allowedTools", "--disallowedTools"]),
+                                 ("skip", ["--dangerously-skip-permissions"])):
+                m.load_settings = lambda mode=mode: {"ai_cli_permissions": mode}
+                notes = []
+                flags = m._permission_flags(claude, True, notes)
+                for want in expect:
+                    assert want in flags, (mode, flags)
+                if mode == "freecad":
+                    assert "mcp__freecad__execute_code" in flags, flags
+                    assert flags.index("--disallowedTools") > flags.index("--allowedTools")
+                assert bool(notes) == bool(flags), (mode, notes)   # applied => said so
+
+            # 'freecad' without the MCP server allows a namespace that is not in
+            # play: it must decline and say why, not look like it worked.
+            m.load_settings = lambda: {"ai_cli_permissions": "freecad"}
+            notes = []
+            assert m._permission_flags(claude, False, notes) == []
+            assert notes and "MCP" in notes[0], notes
+
+            # An unknown CLI's flags are not ours to guess at.
+            notes = []
+            m.load_settings = lambda: {"ai_cli_permissions": "skip"}
+            assert m._permission_flags({"cmd": "somecli", "name": "x"}, False, notes) == []
+            assert notes and "unknown CLI" in notes[0], notes
+
+            # A typo in the settings file asks for everything rather than
+            # silently choosing a mode nobody wrote down.
+            notes = []
+            m.load_settings = lambda: {"ai_cli_permissions": "yolo"}
+            assert m._permission_flags(claude, True, notes) == []
+            assert notes and "unknown ai_cli_permissions" in notes[0], notes
+
+            # Default when the key is absent: ask.
+            m.load_settings = lambda: {}
+            assert m._permission_flags(claude, True, []) == []
+        finally:
+            m.load_settings = saved_settings
         assert "call_tool" in text and "xmlrpc.client" in text, text[:400]
         registry = {t["name"] for t in tools.describe_tools()}
         for name in registry:

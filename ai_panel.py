@@ -39,6 +39,7 @@ from rpc_server.tools import PROFILES, call_tool, describe_tools
 # The provider table and model lookup live with the setup wizard; sharing them
 # keeps the panel and the AI() console offering the same services.
 from rpc_server.console import (
+    _PERMISSION_LABELS,
     _PRESETS,
     _fetch_models,
     discover_local_servers,
@@ -300,6 +301,19 @@ class AIChatPanel(QDockWidget):
         )
         form.addRow(self._cmd_label, self._cmd)
 
+        self._perms_label = QLabel("Asks before:")
+        self._perms = QComboBox()
+        for mode, label in _PERMISSION_LABELS.items():
+            self._perms.addItem(label, mode)
+        self._perms.setToolTip(
+            "How much a launched CLI may do without stopping to ask. Driving "
+            "FreeCAD is dozens of tool calls, and confirming 'pad' forty times "
+            "is how people learn to confirm without reading — but execute_code "
+            "runs unsandboxed Python inside FreeCAD and can do anything to this "
+            "machine, so the middle option keeps that one behind a prompt."
+        )
+        form.addRow(self._perms_label, self._perms)
+
         self._url_label = QLabel("Base URL:")
         self._url = QLineEdit()
         self._url.setPlaceholderText("http://localhost:11434/v1")
@@ -353,6 +367,8 @@ class AIChatPanel(QDockWidget):
         self._model.setCurrentText(model)
         wanted = s.get("ai_tool_profile", "Everything")
         self._profile.setCurrentIndex(max(0, self._profile.findText(wanted)))
+        mode = s.get("ai_cli_permissions", "ask")
+        self._perms.setCurrentIndex(max(0, self._perms.findData(mode)))
         self._on_service_changed()
 
     def _service_matching(self, settings):
@@ -420,7 +436,7 @@ class AIChatPanel(QDockWidget):
 
     def _on_service_changed(self, *_):
         cli = self._current_cli()
-        for w in (self._cmd_label, self._cmd):
+        for w in (self._cmd_label, self._cmd, self._perms_label, self._perms):
             w.setVisible(cli is not None)
         if cli is not None:
             # An external CLI is already configured and signed in: it brings its
@@ -601,6 +617,12 @@ class AIChatPanel(QDockWidget):
         if not cli["cmd"]:
             self._say_system("Type the command to run first.")
             return
+        # Launch is this row's Save: with a CLI selected the button never reaches
+        # the settings path below, so the permission choice would be read from
+        # disk as whatever it was before the user changed the dropdown.
+        settings = load_settings()
+        settings["ai_cli_permissions"] = self._perms.currentData()
+        save_settings(settings)
         ok, message = launch_agent_cli(cli)
         self._say_system(message if ok else f"Launch failed: {message}")
 

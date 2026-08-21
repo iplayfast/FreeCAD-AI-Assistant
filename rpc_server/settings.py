@@ -32,6 +32,11 @@ _DEFAULT_SETTINGS = {
     # progress can want more; a stuck one is caught by the repeated-failure
     # check long before this.
     "ai_max_steps": 25,
+    # How much a launched agent CLI may do without asking. See
+    # console.CLI_PERMISSIONS. "ask" is every prompt as the CLI ships;
+    # "freecad" pre-approves the modelling tools but not execute_code;
+    # "skip" is --dangerously-skip-permissions, which is exactly what it says.
+    "ai_cli_permissions": "ask",
 }
 
 
