@@ -75,7 +75,10 @@ def get_log(lines: int = 60, contains: str = "") -> dict:
             w = mw.findChild(QtWidgets.QTextEdit, "ReportOutput")
             if w is not None:
                 text = w.toPlainText()
-    except ImportError:
+    except Exception:
+        # Not just ImportError: under freecadcmd the FreeCADGui module imports
+        # fine and has no getMainWindow at all, so catching ImportError alone
+        # turned "no GUI, read the log file instead" into an AttributeError.
         pass
 
     if text is None:
@@ -375,11 +378,16 @@ def check_sketch_geometry(doc_name: str, sketch_name: str, auto_fix: bool = Fals
 def get_selection() -> dict:
     try:
         import FreeCADGui
-    except ImportError:
+
+        selected = FreeCADGui.Selection.getSelectionEx()
+    except Exception:
+        # Headless (freecadcmd) imports FreeCADGui fine but has no Selection at
+        # all, so importing was never the thing that could fail. There is no
+        # selection without a 3D view: say so, do not raise.
         return {"available": False, "selection": []}
 
     sel = []
-    for s in FreeCADGui.Selection.getSelectionEx():
+    for s in selected:
         sel.append({
             "doc_name": s.Document.Name,
             "obj_name": s.Object.Name,

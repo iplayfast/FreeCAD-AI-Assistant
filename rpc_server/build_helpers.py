@@ -431,6 +431,27 @@ def createPolar(body, feature, count: int, angle: float = 360, sketch=None, name
     original, and ``angle`` spans the pattern: 360 for a full ring.
     """
     body = _resolve_body(body)
+    # Only a PartDesign feature can be patterned. Hand PolarPattern a sketch —
+    # the obvious mistake, since the sketch is the thing you were just holding —
+    # and it accepts it into Originals without complaint, then produces nothing.
+    # That reads as "polar patterns don't work here" rather than "wrong
+    # argument", and the last model to hit it gave up on patterning entirely.
+    type_id = getattr(feature, "TypeId", "")
+    if not type_id.startswith("PartDesign::"):
+        raise ValueError(
+            f"createPolar repeats a PartDesign feature (Pad/Pocket/Additive*), not "
+            f"{getattr(feature, 'Name', feature)!r} of type {type_id or type(feature).__name__!r}. "
+            "Pass what createPad/createPocket returned; the sketch goes in `sketch=`."
+        )
+    # An angle passed positionally into `sketch=` lands in Axis, where OCCT
+    # complains that the first element of the tuple must be a DocumentObject —
+    # about a tuple the caller never built.
+    if sketch is not None and not hasattr(sketch, "TypeId"):
+        raise ValueError(
+            f"createPolar's `sketch` must be a document object, got {sketch!r}. "
+            "The signature is createPolar(body, feature, count, angle=360, sketch=None) "
+            "— angle is the 4th positional."
+        )
     if sketch is None:
         profile = getattr(feature, "Profile", None)
         if isinstance(profile, (tuple, list)):

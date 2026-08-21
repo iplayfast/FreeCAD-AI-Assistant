@@ -218,20 +218,20 @@ backed out one action at a time.
 Every non-trivial module ends in a `demo()` of plain `assert`s, runnable on its
 own. There is no test framework and none is wanted — match the convention.
 
+Run all of them, in about a second:
+
 ```bash
-python3 rpc_server/tools.py                                  # registry, offline
-python3 rpc_server/mcp_stdio.py --demo                       # MCP bridge dispatch, offline
-python3 -c "from rpc_server.providers import demo; demo()"   # providers, offline
-python3 -c "from rpc_server.agent import demo; demo()"       # agent loop, offline
+freecadcmd run_checks.py    # all 11 modules; exits non-zero if any fail
+python3 run_checks.py       # the 4 that need no FreeCAD; skips the rest
 ```
 
-Those three need no FreeCAD. The rest do, and run under `freecadcmd`:
-
-```python
-from rpc_server.console import demo; demo()          # setup wizard, discovery
-from rpc_server.build_helpers import demo; demo()    # PartDesign helpers
-from rpc_server.bim_handlers import demo; demo()     # BIM, end to end
-```
+Individual ones still work the old way (`python3 rpc_server/tools.py`,
+`python3 rpc_server/mcp_stdio.py --demo`, or `from rpc_server.console import
+demo; demo()` under `freecadcmd`), but run `run_checks.py` before committing.
+The checks that need FreeCAD went unrun for long enough to rot: the first full
+headless run found a missing argument guard in `createPolar`, two handlers that
+raised `AttributeError` instead of reporting "no GUI", and an assertion still
+expecting an error message that had since been improved.
 
 `rpc_server/tools.py` is deliberately FreeCAD-free so the registry unit-tests
 offline; keep FreeCAD imports inside functions there.
@@ -239,9 +239,14 @@ offline; keep FreeCAD imports inside functions there.
 Two `freecadcmd` traps worth knowing before you write a test script:
 
 - `freecadcmd -c "..."` crashes. Write a `.py` file and run `freecadcmd script.py`.
-- `print` and `FreeCAD.Console` output silently drops lines and interleaves with
-  OCCT progress spam, and the exit code is 0 even when an assertion fails. Write
-  results to a file and read it back.
+- `print` and `FreeCAD.Console` output interleaves with OCCT progress spam, and
+  anything still buffered is discarded when `sys.exit` raises — print with
+  `flush=True` or the summary vanishes and the run looks silent.
+- The script is imported under its own filename, never `__main__`, so an
+  `if __name__ == "__main__":` guard runs nothing and exits 0 — a green light
+  for a suite that never executed. Call your entry point unconditionally.
+- `sys.exit(code)` does propagate to the shell, which is what makes
+  `run_checks.py` usable from a hook or CI.
 
 ## License
 

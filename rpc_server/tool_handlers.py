@@ -1042,7 +1042,9 @@ def demo() -> None:
         # looked for on.
         assert "'addCircle' is already in scope" in msg, msg
         msg = fails("createskatch(None, 'x')")
-        assert "Did you mean createSketch" in msg, msg
+        # The hint may offer several near names ("create_sketch, createSketch");
+        # what matters is that the helper actually in scope is among them.
+        assert "createSketch" in msg, msg
         # A genuine mistake with nothing close by is left alone.
         assert "already in scope" not in fails("zzz_no_such_name()")
 
