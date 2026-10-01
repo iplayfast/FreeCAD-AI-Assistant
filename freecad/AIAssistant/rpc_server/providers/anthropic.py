@@ -12,7 +12,7 @@ budget_tokens (rejected on current models).
 
 from typing import Any
 
-from rpc_server.providers.base import (
+from .base import (
     AssistantReply,
     Message,
     ProviderError,

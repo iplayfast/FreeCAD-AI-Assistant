@@ -9,7 +9,7 @@ base_url + model + key.
 import json
 from typing import Any
 
-from rpc_server.providers.base import (
+from .base import (
     AssistantReply,
     Message,
     ProviderError,

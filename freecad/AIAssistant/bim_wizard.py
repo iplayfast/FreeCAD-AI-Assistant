@@ -6,18 +6,14 @@ same tool registry directly — so hanging it off the AI panel only made it look
 like it depended on one.
 """
 
-try:
-    from PySide2.QtWidgets import (
-        QComboBox, QDialog, QFormLayout, QGroupBox, QLabel, QLineEdit,
-        QPushButton, QSizePolicy, QVBoxLayout, QWidget,
-    )
-except ImportError:
-    from PySide.QtGui import (
-        QComboBox, QDialog, QFormLayout, QGroupBox, QLabel, QLineEdit,
-        QPushButton, QSizePolicy, QVBoxLayout, QWidget,
-    )
+# FreeCAD's own ``PySide`` alias, not a hardcoded binding name — see the note
+# in ai_panel.py's imports for why "PySide2 import succeeds" isn't enough.
+from PySide.QtWidgets import (
+    QComboBox, QDialog, QFormLayout, QGroupBox, QLabel, QLineEdit,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+)
 
-from rpc_server.tools import call_tool
+from .rpc_server.tools import call_tool
 
 
 class BimWizardDialog(QDialog):

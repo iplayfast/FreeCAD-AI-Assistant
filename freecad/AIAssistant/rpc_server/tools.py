@@ -151,7 +151,7 @@ def load_handlers() -> None:
     # A plain import is already idempotent (sys.modules caches it), and it
     # PROPAGATES. Swallowing the failure here loses a whole category of tools
     # with no error anywhere, which is the drift this function exists to stop.
-    from rpc_server import (  # noqa: F401  (import for side effect: registration)
+    from . import (  # noqa: F401  (import for side effect: registration)
         bim_handlers,
         inspect_handlers,
         partdesign_handlers,

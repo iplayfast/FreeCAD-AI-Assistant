@@ -10,7 +10,7 @@ post-startup sync that reflects saved settings on the checkable items.
 import FreeCAD
 import FreeCADGui
 
-from rpc_server.settings import load_settings, save_settings
+from .settings import load_settings, save_settings
 
 # PySide is imported inside the two functions that touch Qt, not here. Importing
 # it at module scope kills freecadcmd outright — the process exits before any

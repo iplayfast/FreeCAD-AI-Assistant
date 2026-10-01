@@ -120,7 +120,7 @@ def demo() -> None:
     """Self-check: an unreadable field must not fail the whole object.
 
     Needs FreeCAD. From the Python console:
-      from rpc_server.serialize import demo; demo()
+      from freecad.AIAssistant.rpc_server.serialize import demo; demo()
     """
 
     class _Broken:

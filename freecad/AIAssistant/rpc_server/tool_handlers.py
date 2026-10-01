@@ -24,16 +24,16 @@ import threading
 
 import FreeCAD
 
-from rpc_server.exec_env import exec_namespace
-from rpc_server.fem_executor import run_fem_analysis as _fem_run
-from rpc_server.object_factory import create_object_gui
-from rpc_server.parts_library import get_parts_list as _lib_parts_list
-from rpc_server.parts_library import insert_part_from_library as _lib_insert_part
-from rpc_server.partdesign_handlers import _doc
-from rpc_server.property_mapper import Object, set_object_property
-from rpc_server.serialize import _safe, serialize_object
-from rpc_server.tools import register
-from rpc_server.view_manager import save_active_screenshot
+from .exec_env import exec_namespace
+from .fem_executor import run_fem_analysis as _fem_run
+from .object_factory import create_object_gui
+from .parts_library import get_parts_list as _lib_parts_list
+from .parts_library import insert_part_from_library as _lib_insert_part
+from .partdesign_handlers import _doc
+from .property_mapper import Object, set_object_property
+from .serialize import _safe, serialize_object
+from .tools import register
+from .view_manager import save_active_screenshot
 
 # Reused JSON-Schema fragments -------------------------------------------------
 
@@ -972,7 +972,7 @@ def create_text_label(
 def demo() -> None:
     """Self-check for the dependency graph. Needs FreeCAD.
 
-    Run: ``freecadcmd -c 'from rpc_server.tool_handlers import demo; demo()'``
+    Run: ``freecadcmd -c 'from freecad.AIAssistant.rpc_server.tool_handlers import demo; demo()'``
     """
 
     class _Obj:

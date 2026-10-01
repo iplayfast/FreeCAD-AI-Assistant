@@ -191,7 +191,7 @@ def demo() -> None:
     """Self-check of the properties coercion.
 
     Needs FreeCAD. From the Python console:
-      from rpc_server.property_mapper import demo; demo()
+      from freecad.AIAssistant.rpc_server.property_mapper import demo; demo()
     """
     # A JSON object string is accepted — models send these routinely.
     assert as_property_dict('{"Length": 10}') == {"Length": 10}

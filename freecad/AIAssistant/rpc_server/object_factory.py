@@ -9,7 +9,7 @@ public entry point that selects the branch.
 import FreeCAD
 import ObjectsFem
 
-from rpc_server.property_mapper import Object, set_object_property
+from .property_mapper import Object, set_object_property
 
 
 def _create_fem_mesh(doc: FreeCAD.Document, obj: Object) -> None:

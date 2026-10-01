@@ -11,8 +11,8 @@ FreeCAD-free and transport is stdlib urllib, so this package unit-tests offline
 
 import os
 
-from rpc_server.providers.anthropic import AnthropicProvider
-from rpc_server.providers.base import (
+from .anthropic import AnthropicProvider
+from .base import (
     AssistantReply,
     Message,
     ProviderError,
@@ -21,7 +21,7 @@ from rpc_server.providers.base import (
     post_json,
     set_wire_logger,
 )
-from rpc_server.providers.openai_compat import OpenAICompatProvider
+from .openai_compat import OpenAICompatProvider
 
 __all__ = [
     "AnthropicProvider",
@@ -60,10 +60,10 @@ def demo() -> None:
     """Offline self-check of the message translations (no network).
 
     Run from the addon root:
-      python3 -c "from rpc_server.providers import demo; demo()"
+      python3 -c "from freecad.AIAssistant.rpc_server.providers import demo; demo()"
     """
-    from rpc_server.providers.anthropic import _from_anthropic, _to_anthropic
-    from rpc_server.providers.openai_compat import _from_openai, _to_openai
+    from .anthropic import _from_anthropic, _to_anthropic
+    from .openai_compat import _from_openai, _to_openai
 
     convo: list[Message] = [
         {"role": "user", "content": "make a box"},
@@ -93,7 +93,7 @@ def demo() -> None:
     # default meant a reasoning model spent it thinking and returned empty
     # content, which the agent loop reads as a finished turn on an empty
     # document; a real run stopped with finish_reason 'length' four calls in.
-    import rpc_server.providers.openai_compat as _oc
+    from . import openai_compat as _oc
 
     sent = {}
     real_post = _oc.post_json
@@ -153,7 +153,7 @@ def demo() -> None:
 
     # Wire tap: installed, called with both directions, and never able to break
     # the request it observes.
-    from rpc_server.providers import base as _base
+    from . import base as _base
 
     seen = []
     set_wire_logger(lambda d, u, b: seen.append((d, u, b)))
@@ -177,7 +177,7 @@ def demo() -> None:
     import urllib.error
     import urllib.request
 
-    from rpc_server.providers.base import _send
+    from .base import _send
 
     real_urlopen = urllib.request.urlopen
     try:

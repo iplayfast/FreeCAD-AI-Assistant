@@ -26,7 +26,7 @@ from typing import Any
 
 import FreeCAD
 
-from rpc_server.tools import register
+from .tools import register
 
 _DOC = {"type": "string", "description": "Name of the target document."}
 _BODY = {"type": "string", "description": "Name of the PartDesign::Body."}
@@ -39,7 +39,7 @@ _PLANE = {
 
 
 def _helpers() -> dict[str, Any]:
-    from rpc_server.build_helpers import HELPERS
+    from .build_helpers import HELPERS
     return HELPERS
 
 
@@ -489,7 +489,7 @@ def demo() -> None:
     actually drives, and until this existed nothing exercised them as tools —
     only the helpers underneath, which is not where the arguments get checked.
     """
-    from rpc_server.tools import call_tool
+    from .tools import call_tool
 
     doc_name = call_tool("create_document", {"name": "PartDesignDemo"})["document_name"]
     doc_obj = FreeCAD.getDocument(doc_name)

@@ -23,16 +23,17 @@ import time
 
 import FreeCAD
 
-# This must happen BEFORE rpc_server is imported. There is a second, older copy
-# of this addon installed as Mod/FreeCADMCP, and headless `import rpc_server`
-# picked THAT one — so an edit here was tested against code from eight commits
-# ago and the run looked fine. Claim the name first, then check we got it.
+# This must happen BEFORE rpc_server is imported. There may be a second,
+# differently-pathed checkout of this addon on sys.path, and headless import
+# could pick THAT one — so an edit here was tested against stale code and the
+# run looked fine. Claim the name first, then check we got it.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-for _stale in [m for m in list(sys.modules) if m == "rpc_server" or m.startswith("rpc_server.")]:
+for _stale in [m for m in list(sys.modules)
+               if m == "freecad.AIAssistant" or m.startswith("freecad.AIAssistant.")]:
     del sys.modules[_stale]
 
-import rpc_server as _pkg
+import freecad.AIAssistant.rpc_server as _pkg
 
 if not os.path.abspath(_pkg.__file__).startswith(_HERE + os.sep):
     raise SystemExit(
@@ -41,11 +42,11 @@ if not os.path.abspath(_pkg.__file__).startswith(_HERE + os.sep):
         "checkout). Testing the wrong tree is worse than not testing."
     )
 
-from rpc_server.agent import AgentSession
-from rpc_server.console import _ai_config
-from rpc_server.providers import ProviderError, make_provider
-from rpc_server.settings import load_settings
-from rpc_server.tools import call_tool, describe_tools
+from freecad.AIAssistant.rpc_server.agent import AgentSession
+from freecad.AIAssistant.rpc_server.console import _ai_config
+from freecad.AIAssistant.rpc_server.providers import ProviderError, make_provider
+from freecad.AIAssistant.rpc_server.settings import load_settings
+from freecad.AIAssistant.rpc_server.tools import call_tool, describe_tools
 
 BEARING_608 = (
     "Build a parametric 608 skate bearing in a new document called 'Bearing608'. "

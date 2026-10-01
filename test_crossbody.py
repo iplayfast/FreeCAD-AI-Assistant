@@ -13,15 +13,16 @@ import FreeCAD
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-for _stale in [m for m in list(sys.modules) if m == "rpc_server" or m.startswith("rpc_server.")]:
+for _stale in [m for m in list(sys.modules)
+               if m == "freecad.AIAssistant" or m.startswith("freecad.AIAssistant.")]:
     del sys.modules[_stale]
 
-import rpc_server as _pkg
+import freecad.AIAssistant.rpc_server as _pkg
 
 if not os.path.abspath(_pkg.__file__).startswith(_HERE + os.sep):
     raise SystemExit(f"WRONG COPY: rpc_server is {_pkg.__file__}, not {_HERE}")
 
-from rpc_server.tools import call_tool
+from freecad.AIAssistant.rpc_server.tools import call_tool
 
 
 def out(line: str) -> None:

@@ -13,8 +13,8 @@ from collections import deque
 
 import FreeCAD
 
-from rpc_server.partdesign_handlers import _DOC, _doc, _obj
-from rpc_server.tools import register
+from .partdesign_handlers import _DOC, _doc, _obj
+from .tools import register
 
 _OBJ = {"type": "string", "description": "Name of the object within the document."}
 

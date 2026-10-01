@@ -14,8 +14,8 @@ import json
 from collections import Counter
 from typing import Any, Callable
 
-from rpc_server.providers.base import Message, ProviderError
-from rpc_server.tools import describe_tools
+from .providers.base import Message, ProviderError
+from .tools import describe_tools
 
 DEFAULT_SYSTEM = (
     "You are a FreeCAD embedded AI. You help the user build and modify 3D CAD "
@@ -264,9 +264,9 @@ def demo() -> None:
     """Offline self-check of the loop (fake provider + fake run_tool, no network).
 
     Run from the addon root:
-      python3 -c "from rpc_server.agent import demo; demo()"
+      python3 -c "from freecad.AIAssistant.rpc_server.agent import demo; demo()"
     """
-    from rpc_server.providers.base import AssistantReply, ToolCall
+    from .providers.base import AssistantReply, ToolCall
 
     class _Script:
         def __init__(self, replies):

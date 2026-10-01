@@ -22,19 +22,19 @@ import traceback
 # Every module with a demo(). Registry and handlers first: a break there fails
 # everything after it, and seeing that first is the useful ordering.
 MODULES = (
-    "rpc_server.tools",
-    "rpc_server.serialize",
-    "rpc_server.property_mapper",
-    "rpc_server.providers",
-    "rpc_server.agent",
-    "rpc_server.build_helpers",
-    "rpc_server.tool_handlers",
-    "rpc_server.partdesign_handlers",
-    "rpc_server.inspect_handlers",
-    "rpc_server.bim_handlers",
-    "rpc_server.console",
-    "rpc_server.mcp_stdio",
-    "rpc_server.rpc_server",
+    "freecad.AIAssistant.rpc_server.tools",
+    "freecad.AIAssistant.rpc_server.serialize",
+    "freecad.AIAssistant.rpc_server.property_mapper",
+    "freecad.AIAssistant.rpc_server.providers",
+    "freecad.AIAssistant.rpc_server.agent",
+    "freecad.AIAssistant.rpc_server.build_helpers",
+    "freecad.AIAssistant.rpc_server.tool_handlers",
+    "freecad.AIAssistant.rpc_server.partdesign_handlers",
+    "freecad.AIAssistant.rpc_server.inspect_handlers",
+    "freecad.AIAssistant.rpc_server.bim_handlers",
+    "freecad.AIAssistant.rpc_server.console",
+    "freecad.AIAssistant.rpc_server.mcp_stdio",
+    "freecad.AIAssistant.rpc_server.rpc_server",
 )
 
 

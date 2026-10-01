@@ -18,10 +18,13 @@ import re
 import FreeCAD
 import Part
 
-from rpc_server.partdesign_handlers import _DOC, _doc, _obj
-from rpc_server.tools import register
+from .partdesign_handlers import _DOC, _doc, _obj
+from .tools import register
 
-_ADDON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# This file is at <addon-root>/freecad/AIAssistant/rpc_server/bim_handlers.py,
+# so the addon root is four directories up.
+_ADDON_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
 
 _SKETCH = {"type": "string", "description": "Name of the sketch."}
 
@@ -529,7 +532,7 @@ def demo() -> None:
     """End-to-end check: sketch a room, wall it, cut a door.
 
     Run: ``freecadcmd -c "import sys; sys.path.insert(0, '<addon>'); \
-from rpc_server.bim_handlers import demo; demo()"``
+from .bim_handlers import demo; demo()"``
     """
     doc = create_bim_document("BimHandlersDemo")["document_name"]
     try:
@@ -602,8 +605,8 @@ from rpc_server.bim_handlers import demo; demo()"``
         # symptom was an agent that looked incompetent at BIM.
         import builtins
 
-        from rpc_server import tools as _tools
-        from rpc_server.build_helpers import HELPERS
+        from . import tools as _tools
+        from .build_helpers import HELPERS
 
         known = ({t["name"] for t in _tools.describe_tools()}
                  | set(HELPERS) | set(dir(builtins)))

@@ -714,7 +714,7 @@ def demo() -> None:
     """Self-check: build real geometry in a scratch document, then discard it.
 
     Needs FreeCAD. From the Python console:
-      from rpc_server.build_helpers import demo; demo()
+      from freecad.AIAssistant.rpc_server.build_helpers import demo; demo()
     """
     # Pure helpers first — no document needed.
     assert fcVec([1, 2]) == App.Vector(1, 2, 0)

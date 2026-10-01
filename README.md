@@ -180,7 +180,7 @@ fc.call_tool("create_object", {"doc_name": "Demo", "obj_type": "Part::Box",
 
 ### MCP over stdio
 
-`rpc_server/mcp_stdio.py` is a standalone bridge: an MCP-speaking CLI runs it as
+`freecad/AIAssistant/rpc_server/mcp_stdio.py` is a standalone bridge: an MCP-speaking CLI runs it as
 a subprocess and gets `tools/list`/`tools/call` forwarded to the XML-RPC server
 above, so the registry's tools appear as native tool calls instead of hand-written
 XML-RPC Python. It needs no FreeCAD import and no third-party package — plain
@@ -190,7 +190,7 @@ server above still has to be running to answer it.
 Register it in the CLI's MCP config:
 
 ```json
-{"mcpServers": {"freecad": {"command": "python3", "args": ["<addon dir>/rpc_server/mcp_stdio.py"]}}}
+{"mcpServers": {"freecad": {"command": "python3", "args": ["<addon dir>/freecad/AIAssistant/rpc_server/mcp_stdio.py"]}}}
 ```
 
 or, for a TOML config (Codex CLI):
@@ -198,7 +198,7 @@ or, for a TOML config (Codex CLI):
 ```toml
 [mcp_servers.freecad]
 command = "python3"
-args = ["<addon dir>/rpc_server/mcp_stdio.py"]
+args = ["<addon dir>/freecad/AIAssistant/rpc_server/mcp_stdio.py"]
 ```
 
 A CLI launched without this pre-registered gets the exact snippet, filled in
@@ -245,15 +245,16 @@ than a gate. The first run found two: a duplicated sketch outline reported as
 success three times in a row, and an empty model reply reported as a completed
 turn on an empty document.
 
-Individual ones still work the old way (`python3 rpc_server/tools.py`,
-`python3 rpc_server/mcp_stdio.py --demo`, or `from rpc_server.console import
-demo; demo()` under `freecadcmd`), but run `run_checks.py` before committing.
+Individual ones still work the old way (`python3 freecad/AIAssistant/rpc_server/tools.py`,
+`python3 freecad/AIAssistant/rpc_server/mcp_stdio.py --demo`, or
+`from freecad.AIAssistant.rpc_server.console import demo; demo()` under
+`freecadcmd`), but run `run_checks.py` before committing.
 The checks that need FreeCAD went unrun for long enough to rot: the first full
 headless run found a missing argument guard in `createPolar`, two handlers that
 raised `AttributeError` instead of reporting "no GUI", and an assertion still
 expecting an error message that had since been improved.
 
-`rpc_server/tools.py` is deliberately FreeCAD-free so the registry unit-tests
+`freecad/AIAssistant/rpc_server/tools.py` is deliberately FreeCAD-free so the registry unit-tests
 offline; keep FreeCAD imports inside functions there.
 
 Two `freecadcmd` traps worth knowing before you write a test script:
@@ -270,5 +271,5 @@ Two `freecadcmd` traps worth knowing before you write a test script:
 
 ## License
 
-LGPL-2.1. `rpc_server/` came from the separate FreeCADMCP addon this workbench
+LGPL-2.1-or-later. `rpc_server/` came from the separate FreeCADMCP addon this workbench
 replaces, and has been substantially rewritten since.

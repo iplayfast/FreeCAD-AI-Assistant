@@ -4,14 +4,14 @@ import threading
 from typing import Any
 from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 
-from rpc_server.commands import register_commands, schedule_toggle_sync
-from rpc_server.gui_dispatch import (
+from .commands import register_commands, schedule_toggle_sync
+from .gui_dispatch import (
     cleanup_waker,
     dispatch_to_gui,
     ensure_gui_pump,
     request_shutdown,
 )
-from rpc_server.settings import RPC_HOST, RPC_PORT
+from .settings import RPC_HOST, RPC_PORT
 
 rpc_server_thread = None
 rpc_server_instance = None
@@ -39,7 +39,7 @@ class FreeCADRPC:
 
     def _tool(self, name: str, arguments: dict = None, timeout: float = None):
         """Run a registry tool on the GUI thread. Returns its value, or raises."""
-        from rpc_server import tools
+        from . import tools
 
         return dispatch_to_gui(
             lambda: tools.call_tool(name, arguments or {}),
@@ -88,7 +88,7 @@ class FreeCADRPC:
         small context window needs.
         """
         try:
-            from rpc_server import tools
+            from . import tools
             return {"success": True, "tools": tools.describe_tools(profile)}
         except Exception as e:
             return {"success": False, "error": str(e)}

@@ -13,32 +13,30 @@ FreeCAD, and every tool call is marshalled back onto the GUI thread via
 import json
 import re
 
-try:
-    from PySide2.QtWidgets import (
-        QCheckBox, QComboBox, QFormLayout, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-        QSizePolicy, QTextBrowser, QVBoxLayout, QWidget, QDockWidget,
-    )
-    from PySide2.QtCore import QEvent, QObject, Qt, QThread, Signal
-    from PySide2.QtGui import QPalette, QTextCursor
-except ImportError:
-    from PySide.QtGui import (
-        QCheckBox, QComboBox, QFormLayout, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-        QPalette, QSizePolicy, QTextBrowser, QTextCursor, QVBoxLayout, QWidget,
-        QDockWidget,
-    )
-    from PySide.QtCore import QEvent, QObject, Qt, QThread, Signal
+# FreeCAD's own ``PySide`` alias, not a hardcoded binding name: it always
+# matches whatever Qt binding FreeCADGui itself is built against (PySide2 or
+# PySide6 depending on the build), so widgets it hands us — getMainWindow(),
+# in particular — type-check correctly against classes imported from here.
+# Importing ``PySide2`` directly can succeed (FreeCAD ships a compat module
+# under that name) while still producing a class hierarchy shiboken refuses to
+# accept a PySide6-wrapped main window against.
+from PySide.QtWidgets import (
+    QCheckBox, QComboBox, QFormLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QSizePolicy, QTextBrowser, QVBoxLayout, QWidget, QDockWidget,
+)
+from PySide.QtCore import QEvent, QObject, Qt, QThread, Signal
+from PySide.QtGui import QPalette, QTextCursor
 
-from rpc_server.agent import AgentSession, INCOMPLETE_STOPS, select_tools
-from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
-from rpc_server.providers import ProviderError, make_provider, set_wire_logger
-from rpc_server.settings import load_settings, save_settings
-from rpc_server.tools import PROFILES, call_tool, describe_tools
+from .rpc_server.agent import AgentSession, INCOMPLETE_STOPS, select_tools
+from .rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
+from .rpc_server.providers import ProviderError, make_provider, set_wire_logger
+from .rpc_server.settings import load_settings, save_settings
+from .rpc_server.tools import PROFILES, call_tool, describe_tools
 
 # The provider table and model lookup live with the setup wizard; sharing them
 # keeps the panel and the AI() console offering the same services.
-from rpc_server.console import (
+from .rpc_server.console import (
     _PERMISSION_LABELS,
     _PRESETS,
     _fetch_models,

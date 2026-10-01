@@ -10,7 +10,7 @@ from typing import Any
 import FreeCAD
 import FreeCADGui
 
-from rpc_server.gui_dispatch import post_to_gui
+from .gui_dispatch import post_to_gui
 
 try:
     import Part
@@ -23,7 +23,7 @@ except ImportError:  # as above
     Sketcher = None
 
 try:
-    from rpc_server.build_helpers import HELPERS
+    from .build_helpers import HELPERS
 except ImportError:  # needs Part/Sketcher; the namespace works fine without it
     HELPERS = {}
 

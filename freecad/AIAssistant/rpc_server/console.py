@@ -23,10 +23,10 @@ import threading
 
 import FreeCAD
 
-from rpc_server.agent import AgentSession, DEFAULT_SYSTEM, INCOMPLETE_STOPS
-from rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump, post_to_gui
-from rpc_server.providers import ProviderError, get_json, make_provider, set_wire_logger
-from rpc_server.settings import load_settings, save_settings
+from .agent import AgentSession, DEFAULT_SYSTEM, INCOMPLETE_STOPS
+from .gui_dispatch import dispatch_to_gui, ensure_gui_pump, post_to_gui
+from .providers import ProviderError, get_json, make_provider, set_wire_logger
+from .settings import load_settings, save_settings
 
 _AI_KEYS = ("ai_provider", "ai_model", "ai_base_url", "ai_api_key")
 
@@ -183,7 +183,10 @@ def _has_freecad_mcp(config_path: str) -> bool:
 
 
 def _addon_dir() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # This file is at <addon-root>/freecad/AIAssistant/rpc_server/console.py,
+    # so the addon root is four directories up.
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
 
 
 def scan_clis() -> list:
@@ -276,7 +279,7 @@ def discover_local_servers(timeout: float = 1.0) -> list:
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from rpc_server.settings import RPC_PORT
+    from .settings import RPC_PORT
 
     listeners = _loopback_listeners()
     names = _listener_names(listeners)
@@ -362,14 +365,14 @@ def write_briefing(cli: dict = None) -> str:
     whether to include the "register the MCP server" section below — omitted
     when called outside a launch (e.g. by tests).
     """
-    from rpc_server import tools
-    from rpc_server.settings import RPC_HOST, RPC_PORT
+    from . import tools
+    from .settings import RPC_HOST, RPC_PORT
 
     url = f"http://{RPC_HOST}:{RPC_PORT}"
     try:
         # GUI-only (it imports FreeCADGui), which is where this is called for
         # real; headless, the port above is still the right thing to publish.
-        from rpc_server import rpc_server as _rpc
+        from . import rpc_server as _rpc
     except Exception:
         running, methods = False, []
     else:
@@ -401,7 +404,7 @@ def write_briefing(cli: dict = None) -> str:
         "",
     ]
     if cli and cli.get("config") and not _has_freecad_mcp(cli["config"]):
-        mcp_script = os.path.join(_addon_dir(), "rpc_server", "mcp_stdio.py")
+        mcp_script = os.path.join(_addon_dir(), "freecad", "AIAssistant", "rpc_server", "mcp_stdio.py")
         is_toml = cli["config"].endswith(".toml")
         snippet = (
             f'[mcp_servers.freecad]\ncommand = "python3"\nargs = ["{mcp_script}"]'
@@ -506,7 +509,7 @@ def launch_agent_cli(cli: dict = None) -> tuple:
     ``cli`` omitted means "whatever is installed" — straight through if there is
     only one, otherwise ask.
     """
-    from rpc_server.rpc_server import start_rpc_server
+    from .rpc_server import start_rpc_server
 
     if cli is None:
         installed = [c for c in scan_clis() if c["path"]]
@@ -667,7 +670,7 @@ def _launch_cli(cli: dict) -> tuple:
     # Publishing it here means a changed port follows the launch, inherited down
     # the chain (terminal -> wrapper -> CLI -> MCP bridge), with no CLI config
     # to edit.
-    from rpc_server.settings import RPC_HOST, RPC_PORT
+    from .settings import RPC_HOST, RPC_PORT
     env["FREECAD_RPC_URL"] = f"http://{RPC_HOST}:{RPC_PORT}"
     addon_dir = _addon_dir()
     script = _wrapper_script(argv, addon_dir)
@@ -962,7 +965,7 @@ def AI(prompt: str) -> None:
     frozen window. Tool calls are marshalled back onto the GUI thread, which is
     where FreeCAD requires document and ViewObject access to happen.
     """
-    from rpc_server.tools import call_tool
+    from .tools import call_tool
 
     try:
         provider = make_provider(_ai_config())
@@ -983,7 +986,7 @@ def AI(prompt: str) -> None:
 
     # Same tool profile as the panel: the two faces sharing one registry is the
     # point of it, and that includes agreeing on how much of it to describe.
-    from rpc_server.tools import describe_tools
+    from .tools import describe_tools
 
     _s = load_settings()
     session = AgentSession(
@@ -1068,13 +1071,13 @@ def demo() -> None:
     """Self-check of the setup wizard with the dialogs stubbed out.
 
     Needs FreeCAD (settings.py imports it), so run it from the Python console:
-      from rpc_server.console import demo; demo()
+      from .console import demo; demo()
     """
     import shutil
 
-    import rpc_server.console as m
-    from rpc_server import tools
-    from rpc_server.settings import RPC_HOST, RPC_PORT
+    from . import console as m
+    from . import tools
+    from .settings import RPC_HOST, RPC_PORT
 
     real = (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
             m._offer_no_key, m._launch_cli, m._open_keys_page)
