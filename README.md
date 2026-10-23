@@ -46,8 +46,9 @@ git clone https://github.com/iplayfast/FreeCAD-AI-Assistant.git \
 On Windows that is `%APPDATA%\FreeCAD\Mod`, on macOS
 `~/Library/Application Support/FreeCAD/Mod`.
 
-Needs FreeCAD 0.21+ and Python 3.10+ (FreeCAD's own interpreter — nothing to
-install). Developed against FreeCAD 26.3.
+Needs FreeCAD 1.0+ and Python 3.10+ (FreeCAD's own interpreter — nothing to
+install). 1.0 is the floor because the parametric deliverable is built on
+`App::VarSet`, which did not exist before it. Developed against FreeCAD 26.3.
 
 Pick **AI Assistant** from the workbench dropdown. The toolbar has three commands:
 toggle the chat panel, launch an agent CLI, and the BIM wizard.

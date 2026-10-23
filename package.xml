@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no" ?>
 <package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
   <name>AI Assistant</name>
-  <description>AI assistant workbench for FreeCAD</description>
+  <description>Drive FreeCAD from an AI assistant: a chat panel, an AI() function in the Python console, and an MCP/XML-RPC server that external agent CLIs can connect to. All three share one tool registry.</description>
   <version>0.1.0</version>
-  <date>2026-10-01</date>
+  <date>2026-10-23</date>
   <maintainer email="cwbruner@gmail.com">Chris Bruner</maintainer>
   <license file="LICENSE">LGPL-2.1-or-later</license>
   <url type="repository" branch="master">https://github.com/iplayfast/FreeCAD-AI-Assistant.git</url>
@@ -21,7 +21,7 @@
   <content>
     <workbench>
       <classname>AIAssistantWB</classname>
-      <subdirectory>AIAssistant</subdirectory>
+      <subdirectory>freecad/AIAssistant</subdirectory>
     </workbench>
   </content>
 </package>

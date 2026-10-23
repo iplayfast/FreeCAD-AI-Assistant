@@ -153,11 +153,28 @@ def _state(body) -> dict:
         return {"valid": False, "volume": None, "solids": 0, "error": str(exc)[:120]}
 
 
+# A number becomes an App::PropertyLength, i.e. millimetres, which is right for
+# a dimension and wrong for everything that merely counts. Offered on both
+# variable tools because the typed path is the one the model is steered to, and
+# without this it had no way to say "this one is a count".
+_VAR_TYPES_SCHEMA = {
+    "type": "object",
+    "description": "Optional per-variable FreeCAD property type, e.g. "
+                   "{'BallCount': 'App::PropertyInteger', 'Tilt': "
+                   "'App::PropertyAngle'}. Numbers default to "
+                   "App::PropertyLength (mm), so pass this for counts, angles "
+                   "and ratios. Naming a type for a variable that already has a "
+                   "different one rebuilds it with the type you asked for.",
+}
+
+
 @register(
     "create_varset",
     "Create the document's App::VarSet (or return the existing one) to store parametric "
     "dimension variables. Pass a dictionary of variables (e.g. {'InnerDia': 8.0, "
-    "'OuterDia': 22.0, 'BallCount': 8}) to create and initialize them in one step. "
+    "'OuterDia': 22.0}) to create and initialize them in one step. A number becomes a "
+    "length in mm, so anything that is a count or an angle needs `types` as well "
+    "(e.g. {'BallCount': 'App::PropertyInteger'}) or it ends up as '8 mm'. "
     "Returns expression_paths — use those verbatim in bind_expression; do not assemble "
     "a path by hand. Omit `name`: one VarSet per document named 'Vars' is the convention, "
     "and a second name means half the model reads variables the other half never sees.",
@@ -172,18 +189,20 @@ def _state(body) -> dict:
                 "type": "object",
                 "description": "Key-value mapping of variable names to numbers/values to create.",
             },
+            "types": _VAR_TYPES_SCHEMA,
         },
         "required": ["doc_name"],
     },
 )
-def create_varset(doc_name: str, name: str = "Vars", variables: dict[str, Any] | None = None) -> dict:
+def create_varset(doc_name: str, name: str = "Vars", variables: dict[str, Any] | None = None,
+                  types: dict[str, str] | None = None) -> dict:
     doc = _doc(doc_name)
     h = _helpers()
     vs = h["readyVars"](doc, name)
     paths = {}
     if variables:
         for k, v in variables.items():
-            paths[k] = h["addVar"](vs, k, v)
+            paths[k] = h["addVar"](vs, k, v, property_type=(types or {}).get(k, ""))
     doc.recompute()
     props = {p: str(getattr(vs, p)) for p in vs.PropertiesList if vs.getGroupOfProperty(p) != "Base"}
     return {"varset_name": vs.Name, "variables": props, "expression_paths": paths}
@@ -192,7 +211,8 @@ def create_varset(doc_name: str, name: str = "Vars", variables: dict[str, Any] |
 @register(
     "set_variables",
     "Set or add parametric dimension variables on an existing App::VarSet. Omit "
-    "`varset_name` for the document's 'Vars'.",
+    "`varset_name` for the document's 'Vars'. Use `types` to fix a variable that "
+    "was created as a length when it should be a count or an angle.",
     {
         "type": "object",
         "properties": {
@@ -203,17 +223,19 @@ def create_varset(doc_name: str, name: str = "Vars", variables: dict[str, Any] |
                 "type": "object",
                 "description": "Key-value mapping of variable names to numbers/values to set.",
             },
+            "types": _VAR_TYPES_SCHEMA,
         },
         "required": ["doc_name", "variables"],
     },
 )
-def set_variables(doc_name: str, varset_name: str = "Vars", variables: dict[str, Any] | None = None) -> dict:
+def set_variables(doc_name: str, varset_name: str = "Vars", variables: dict[str, Any] | None = None,
+                  types: dict[str, str] | None = None) -> dict:
     doc = _doc(doc_name)
     h = _helpers()
     vs = _obj(doc, varset_name, "App::VarSet")
     paths = {}
     for k, v in (variables or {}).items():
-        paths[k] = h["addVar"](vs, k, v)
+        paths[k] = h["addVar"](vs, k, v, property_type=(types or {}).get(k, ""))
     doc.recompute()
     props = {p: str(getattr(vs, p)) for p in vs.PropertiesList if vs.getGroupOfProperty(p) != "Base"}
     return {"varset_name": vs.Name, "variables": props, "expression_paths": paths}
@@ -572,6 +594,22 @@ def demo() -> None:
         call_tool("set_variables", {"doc_name": doc_name, "variables": {"Thickness": 12}})
         assert abs(doc_obj.getObject(padded["feature_name"]).Length.Value - 12) < 1e-6, \
             "changing the variable must rebuild the feature"
+
+        # A count through the typed path, which until now could only ever make
+        # it a length: the tools steer models here, so the escape hatch has to
+        # exist here too and not only in execute_code's addVar.
+        vs = doc_obj.getObject("Vars")
+        call_tool("create_varset", {"doc_name": doc_name, "variables": {"BallCount": 8},
+                                    "types": {"BallCount": "App::PropertyInteger"}})
+        assert vs.getTypeIdOfProperty("BallCount") == "App::PropertyInteger", \
+            vs.getTypeIdOfProperty("BallCount")
+        # And set_variables repairs one that is already wrong.
+        call_tool("set_variables", {"doc_name": doc_name, "variables": {"Rows": 3}})
+        assert vs.getTypeIdOfProperty("Rows") == "App::PropertyLength"
+        call_tool("set_variables", {"doc_name": doc_name, "variables": {"Rows": 3},
+                                    "types": {"Rows": "App::PropertyInteger"}})
+        assert vs.getTypeIdOfProperty("Rows") == "App::PropertyInteger" and vs.Rows == 3, \
+            vs.getTypeIdOfProperty("Rows")
 
         # Both halves of what a smoke test hit: a name that only exists as a
         # Label, and a name that exists nowhere.

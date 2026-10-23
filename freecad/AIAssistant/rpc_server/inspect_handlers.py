@@ -81,9 +81,15 @@ def get_log(lines: int = 60, contains: str = "") -> dict:
                  or mw.findChild(QtWidgets.QTextEdit, "Report view"))
             if w is None:
                 for dock in mw.findChildren(QtWidgets.QDockWidget):
+                    # Keep looking past a dock that merely has "report" in its
+                    # name and no QTextEdit in it - a third-party panel
+                    # enumerated first would otherwise end the search empty and
+                    # put us back on the silent "no Report view" this fallback
+                    # exists to prevent.
                     if "report" in dock.objectName().lower():
                         w = dock.findChild(QtWidgets.QTextEdit)
-                        break
+                        if w is not None:
+                            break
             if w is not None:
                 text = w.toPlainText()
     except Exception:
@@ -333,13 +339,17 @@ def cross_section(doc_name: str, obj_name: str, axis: str = "z",
         # is the wall", and the description no longer claims it does.
         # ponytail: bounding box, not section area; a face built from nested
         # wires fails on exactly the hollow parts this tool is for.
-        if wires:
-            bbs = [w.BoundBox for w in wires]
-            sec["extent"] = {
-                "xlen": round(max(b.XMax for b in bbs) - min(b.XMin for b in bbs), 4),
-                "ylen": round(max(b.YMax for b in bbs) - min(b.YMin for b in bbs), 4),
-                "zlen": round(max(b.ZMax for b in bbs) - min(b.ZMin for b in bbs), 4),
-            }
+        #
+        # Zeros rather than a missing key on an empty slice: every sibling key
+        # is unconditional, so a caller looping s["extent"]["xlen"] over the
+        # sections would KeyError on the first cut that misses material - a
+        # position outside the solid, or the gap between two of them.
+        bbs = [w.BoundBox for w in wires]
+        sec["extent"] = {
+            "xlen": round(max(b.XMax for b in bbs) - min(b.XMin for b in bbs), 4) if bbs else 0.0,
+            "ylen": round(max(b.YMax for b in bbs) - min(b.YMin for b in bbs), 4) if bbs else 0.0,
+            "zlen": round(max(b.ZMax for b in bbs) - min(b.ZMin for b in bbs), 4) if bbs else 0.0,
+        }
         out.append(sec)
     return {"axis": axis, "range": [round(lo, 4), round(hi, 4)], "sections": out}
 
@@ -523,6 +533,12 @@ def demo() -> None:
         hollow = cross_section("InspectDemo", "Tube", axis="z", count=2)
         assert all(s["closed_wires"] == 2 for s in hollow["sections"]), hollow
         assert all(abs(s["extent"]["xlen"] - 20.0) < 1e-6 for s in hollow["sections"]), hollow
+
+        # A cut that misses the solid entirely still reports extent, zeroed:
+        # the key is part of every section or a caller cannot loop over them.
+        empty = cross_section("InspectDemo", "Box", axis="z", positions=[-5, 500])
+        assert all(s["wires"] == 0 and s["extent"]["xlen"] == 0.0
+                   for s in empty["sections"]), empty
 
         # A sketch with a free circle: 3 DoF (centre x, y and radius).
         sk = doc.addObject("Sketcher::SketchObject", "Sk")

@@ -563,6 +563,12 @@ def addVar(varset, name: str, value, group: str = "Parameters",
 
     Setting an existing variable is the same call, so a rebuilt script is
     idempotent; addProperty on its own raises "already exists".
+
+    An explicit ``property_type`` that disagrees with the existing property
+    rebuilds it, because the case this comes up in is fixing a variable created
+    with the wrong type ('BallCount': 8 arriving as 8 mm) — and the fix being
+    silently discarded is how it stayed wrong. Re-running the same call is
+    still idempotent: the second time, the type already matches.
     """
     if isinstance(varset, str):
         doc = App.ActiveDocument
@@ -574,6 +580,10 @@ def addVar(varset, name: str, value, group: str = "Parameters",
         else:
             varset = vs_obj
 
+    # Only an explicitly requested type can retype an existing variable; the
+    # one inferred from `value` must not, or setting Bore to a plain 8 would
+    # quietly drag an App::PropertyAngle back to a length.
+    wanted = property_type
     if not property_type:
         property_type = _VAR_TYPES.get(type(value), "App::PropertyLength")
 
@@ -586,6 +596,13 @@ def addVar(varset, name: str, value, group: str = "Parameters",
                 f"'{name}' is a built-in property of the VarSet, not a variable. "
                 "Pick another name."
             )
+        if wanted and varset.getTypeIdOfProperty(name) != wanted:
+            # Keep the group and docstring the variable already had: this is a
+            # repair, not a redefinition, and the caller rarely repeats them.
+            group = varset.getGroupOfProperty(name) or group
+            description = varset.getDocumentationOfProperty(name) or description
+            varset.removeProperty(name)
+            varset.addProperty(wanted, name, group, description)
     else:
         varset.addProperty(property_type, name, group, description)
 
@@ -897,6 +914,27 @@ def demo() -> None:
         assert vs.Height.Value == 8, vs.Height
         assert addVar(vs, "Note", "text") == "Vars.Note" and vs.Note == "text"
         assert addVar(vs, "Flag", True) == "Vars.Flag" and vs.Flag is True
+
+        # A count arrives as a length unless asked otherwise, and asking
+        # afterwards has to actually retype it — the repair being discarded is
+        # how 'BallCount': 8 stayed 8 mm. Group and docstring survive it.
+        assert addVar(vs, "BallCount", 8, description="how many") == "Vars.BallCount"
+        assert vs.getTypeIdOfProperty("BallCount") == "App::PropertyLength"
+        addVar(vs, "BallCount", 8, property_type="App::PropertyInteger")
+        assert vs.getTypeIdOfProperty("BallCount") == "App::PropertyInteger", \
+            vs.getTypeIdOfProperty("BallCount")
+        assert vs.BallCount == 8 and vs.getGroupOfProperty("BallCount") == "Parameters"
+        assert vs.getDocumentationOfProperty("BallCount") == "how many"
+        # Idempotent on a re-run: the type already matches, nothing is rebuilt.
+        addVar(vs, "BallCount", 9, property_type="App::PropertyInteger")
+        assert vs.BallCount == 9
+
+        # An *inferred* type must never retype: plain 8 must not drag an angle
+        # back to a length just because numbers default that way.
+        addVar(vs, "Tilt", 30, property_type="App::PropertyAngle")
+        addVar(vs, "Tilt", 45)
+        assert vs.getTypeIdOfProperty("Tilt") == "App::PropertyAngle", \
+            vs.getTypeIdOfProperty("Tilt")
 
         # A built-in must not be silently overwritten — the label survives.
         try:
