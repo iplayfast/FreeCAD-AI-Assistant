@@ -72,7 +72,18 @@ def get_log(lines: int = 60, contains: str = "") -> dict:
 
         mw = FreeCADGui.getMainWindow()
         if mw is not None:
-            w = mw.findChild(QtWidgets.QTextEdit, "ReportOutput")
+            # The widget's objectName is not stable across builds: "ReportOutput"
+            # in some, "Report view" (the dock's name, inherited) in others. A
+            # miss here is silent - get_log reports "no Report view" on a running
+            # GUI and the caller believes the log is empty - so fall back to the
+            # only QTextEdit living inside the Report view dock.
+            w = (mw.findChild(QtWidgets.QTextEdit, "ReportOutput")
+                 or mw.findChild(QtWidgets.QTextEdit, "Report view"))
+            if w is None:
+                for dock in mw.findChildren(QtWidgets.QDockWidget):
+                    if "report" in dock.objectName().lower():
+                        w = dock.findChild(QtWidgets.QTextEdit)
+                        break
             if w is not None:
                 text = w.toPlainText()
     except Exception:
@@ -273,8 +284,9 @@ def check_interference(doc_name: str, obj_names: list | None = None) -> dict:
 
 @register(
     "cross_section",
-    "Slice a shape with planes and report each section's area and extent. Cheap "
-    "way to check wall thickness or clearance along a part without rendering it.",
+    "Slice a shape with planes and report each section's wire count, perimeter "
+    "and extent. Cheap way to check wall thickness or clearance along a part "
+    "without rendering it. Two closed wires in a slice means a hollow section.",
     {
         "type": "object",
         "properties": {
@@ -308,9 +320,21 @@ def cross_section(doc_name: str, obj_name: str, axis: str = "z",
     out = []
     for p in positions:
         wires = sh.slice(normal, float(p))
-        out.append({"position": round(float(p), 4), "wires": len(wires),
-                    "closed_wires": sum(1 for w in wires if w.isClosed()),
-                    "length": round(sum(w.Length for w in wires), 4)})
+        sec = {"position": round(float(p), 4), "wires": len(wires),
+               "closed_wires": sum(1 for w in wires if w.isClosed()),
+               "length": round(sum(w.Length for w in wires), 4)}
+        # The extent is what answers "how thick is the wall here" - the
+        # perimeter alone cannot distinguish a wide section from a tall one.
+        # ponytail: bounding box, not section area; a face built from nested
+        # wires fails on exactly the hollow parts this tool is for.
+        if wires:
+            bbs = [w.BoundBox for w in wires]
+            sec["extent"] = {
+                "xlen": round(max(b.XMax for b in bbs) - min(b.XMin for b in bbs), 4),
+                "ylen": round(max(b.YMax for b in bbs) - min(b.YMin for b in bbs), 4),
+                "zlen": round(max(b.ZMax for b in bbs) - min(b.ZMin for b in bbs), 4),
+            }
+        out.append(sec)
     return {"axis": axis, "range": [round(lo, 4), round(hi, 4)], "sections": out}
 
 
@@ -474,6 +498,24 @@ def demo() -> None:
         assert all(s["closed_wires"] == 1 for s in cs["sections"]), cs
         # 10x10 square perimeter, at every height.
         assert all(abs(s["length"] - 40.0) < 1e-6 for s in cs["sections"]), cs
+        # The extent is what answers "how thick is it here" - perimeter alone
+        # cannot tell a wide section from a tall one. Flat in the slice axis.
+        assert all(abs(s["extent"]["xlen"] - 10.0) < 1e-6
+                   and abs(s["extent"]["ylen"] - 10.0) < 1e-6
+                   and s["extent"]["zlen"] == 0.0 for s in cs["sections"]), cs
+
+        # The description promises two closed wires means a hollow section, so
+        # that is a contract, not an observation: a tube must report it.
+        outer = doc.addObject("Part::Cylinder", "Outer")
+        inner = doc.addObject("Part::Cylinder", "Inner")
+        outer.Radius, outer.Height = 10, 20
+        inner.Radius, inner.Height = 6, 20
+        tube = doc.addObject("Part::Cut", "Tube")
+        tube.Base, tube.Tool = outer, inner
+        doc.recompute()
+        hollow = cross_section("InspectDemo", "Tube", axis="z", count=2)
+        assert all(s["closed_wires"] == 2 for s in hollow["sections"]), hollow
+        assert all(abs(s["extent"]["xlen"] - 20.0) < 1e-6 for s in hollow["sections"]), hollow
 
         # A sketch with a free circle: 3 DoF (centre x, y and radius).
         sk = doc.addObject("Sketcher::SketchObject", "Sk")
