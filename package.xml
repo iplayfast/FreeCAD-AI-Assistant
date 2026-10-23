@@ -6,8 +6,8 @@
   <date>2026-10-01</date>
   <maintainer email="cwbruner@gmail.com">Chris Bruner</maintainer>
   <license file="LICENSE">LGPL-2.1-or-later</license>
-  <url type="repository" branch="master">https://github.com/iplayfast/FreeCAD-AI-Workbench.git</url>
-  <icon>icons/ai_workbench.svg</icon>
+  <url type="repository" branch="master">https://github.com/iplayfast/FreeCAD-AI-Assistant.git</url>
+  <icon>icons/ai_assistant.svg</icon>
 
   <freecadmin>1.0</freecadmin>
 

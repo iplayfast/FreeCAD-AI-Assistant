@@ -782,7 +782,7 @@ def insert_part_from_library(relative_path: str) -> dict:
 
 
 _PACKAGE_XML_NS = {"pm": "https://wiki.freecad.org/Package_Metadata"}
-_SCAN_CACHE_FILENAME = "freecad_ai_workbench_scan.json"
+_SCAN_CACHE_FILENAME = "freecad_ai_assistant_scan.json"
 
 
 def _scan_cache_path() -> str:
@@ -1245,7 +1245,11 @@ def demo() -> None:
         assert addons, "expected at least one addon with package.xml metadata (this addon has one)"
         assert all(w["description"] for w in addons), "addon package.xml should yield a description"
         assert all(os.path.isdir(w["path"]) for w in addons)
-        this_addon = next(w for w in wbs if w["path"] and os.path.basename(w["path"]) == "AI")
+        # By path containment, not by directory name: what the addon directory
+        # is called is the installer's choice (Addon Manager derives it from the
+        # repo name, a hand clone from whatever was typed), so pinning it to one
+        # spelling makes this check fail on a correct install.
+        this_addon = next(w for w in wbs if w["path"] and __file__.startswith(w["path"]))
         if any(w["commands"] for w in wbs):   # GUI only: headless registers no commands
             assert any(c["name"] == "AILaunchAgentCommand" for c in this_addon["commands"]), this_addon
         cached = list_workbenches()

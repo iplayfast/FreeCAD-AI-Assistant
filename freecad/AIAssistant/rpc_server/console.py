@@ -98,8 +98,8 @@ _CONVENTION_FILES = {"claude": "CLAUDE.md", "codex": "AGENTS.md", "agy": "GEMINI
 # the addon directory — and a CLI that resumes a previous session, or that a
 # terminal drops in $HOME, sees a name that matches nothing and asks "read
 # what?" instead of reading the briefing. The path is computed per launch: the
-# addon directory moves with the FreeCAD version (…/Mod/AI under whichever
-# v<N>-<M> is installed), so it cannot be baked in here.
+# addon directory moves with the FreeCAD version (…/Mod/AI-Assistant under
+# whichever v<N>-<M> is installed), so it cannot be baked in here.
 _BRIEFING_PROMPT = (
     "Read {path} before doing anything else. It describes the live FreeCAD "
     "session you are driving, the port to reach it on, and the tools you can call."
@@ -415,7 +415,7 @@ def write_briefing(cli: dict = None) -> str:
         addon_summary = ""
 
     lines = [
-        "# FreeCAD AI Workbench — briefing for an external agent",
+        "# FreeCAD AI Assistant — briefing for an external agent",
         "",
         "You were launched from the AI Assistant panel of a **running FreeCAD",
         "session**, and your job is to drive that session for the user. This file",

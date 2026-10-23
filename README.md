@@ -36,11 +36,11 @@ launch, so it can never describe a FreeCAD other than the one running.
 
 ## Install
 
-Clone into your FreeCAD `Mod` directory as `AI`, then restart FreeCAD:
+Clone into your FreeCAD `Mod` directory as `AI-Assistant`, then restart FreeCAD:
 
 ```bash
-git clone https://github.com/iplayfast/FreeCAD-AI-Workbench.git \
-  ~/.local/share/FreeCAD/<version>/Mod/AI
+git clone https://github.com/iplayfast/FreeCAD-AI-Assistant.git \
+  ~/.local/share/FreeCAD/<version>/Mod/AI-Assistant
 ```
 
 On Windows that is `%APPDATA%\FreeCAD\Mod`, on macOS

@@ -13,7 +13,7 @@ import FreeCADGui as Gui
 # This file is at <addon-root>/freecad/AIAssistant/init_gui.py, so the addon
 # root is three directories up.
 _ADDON_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_AI_ICON = os.path.join(_ADDON_ROOT, "icons", "ai_workbench.svg")
+_AI_ICON = os.path.join(_ADDON_ROOT, "icons", "ai_assistant.svg")
 _AI_BIM_ICON = os.path.join(_ADDON_ROOT, "icons", "bim_wizard.svg")
 _AI_CLI_ICON = os.path.join(_ADDON_ROOT, "icons", "agent_cli.svg")
 
