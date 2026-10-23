@@ -285,8 +285,12 @@ def check_interference(doc_name: str, obj_names: list | None = None) -> dict:
 @register(
     "cross_section",
     "Slice a shape with planes and report each section's wire count, perimeter "
-    "and extent. Cheap way to check wall thickness or clearance along a part "
-    "without rendering it. Two closed wires in a slice means a hollow section.",
+    "and overall extent. Cheap way to see how a part's section changes along "
+    "its length without rendering it. `extent` is the bounding box of the whole "
+    "slice, so it is the section's outer size - NOT a wall thickness: a 4 mm "
+    "wall on a 20 mm tube still reports xlen 20. Two closed wires means two "
+    "separate loops, which is a hollow section only when one is nested inside "
+    "the other; two legs of a bracket report the same thing.",
     {
         "type": "object",
         "properties": {
@@ -323,8 +327,10 @@ def cross_section(doc_name: str, obj_name: str, axis: str = "z",
         sec = {"position": round(float(p), 4), "wires": len(wires),
                "closed_wires": sum(1 for w in wires if w.isClosed()),
                "length": round(sum(w.Length for w in wires), 4)}
-        # The extent is what answers "how thick is the wall here" - the
-        # perimeter alone cannot distinguish a wide section from a tall one.
+        # How wide and tall the section is - the perimeter alone cannot tell a
+        # wide section from a tall one. This is the union box over every wire,
+        # so on a tube it is the OUTER diameter; it does not answer "how thick
+        # is the wall", and the description no longer claims it does.
         # ponytail: bounding box, not section area; a face built from nested
         # wires fails on exactly the hollow parts this tool is for.
         if wires:
@@ -498,14 +504,15 @@ def demo() -> None:
         assert all(s["closed_wires"] == 1 for s in cs["sections"]), cs
         # 10x10 square perimeter, at every height.
         assert all(abs(s["length"] - 40.0) < 1e-6 for s in cs["sections"]), cs
-        # The extent is what answers "how thick is it here" - perimeter alone
+        # The extent is how wide and tall the section is - perimeter alone
         # cannot tell a wide section from a tall one. Flat in the slice axis.
         assert all(abs(s["extent"]["xlen"] - 10.0) < 1e-6
                    and abs(s["extent"]["ylen"] - 10.0) < 1e-6
                    and s["extent"]["zlen"] == 0.0 for s in cs["sections"]), cs
 
-        # The description promises two closed wires means a hollow section, so
-        # that is a contract, not an observation: a tube must report it.
+        # A tube must report its two nested wires, and must report the OUTER
+        # diameter as the extent - the number the old description invited a
+        # caller to read as a 4 mm wall.
         outer = doc.addObject("Part::Cylinder", "Outer")
         inner = doc.addObject("Part::Cylinder", "Inner")
         outer.Radius, outer.Height = 10, 20

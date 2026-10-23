@@ -263,14 +263,14 @@ class AIChatPanel(QDockWidget):
         self._service.insertSeparator(self._service.count())
         self._service.addItems(list(self._cli_choices))
         self._service.currentIndexChanged.connect(self._on_service_picked)
-        self._detect_btn = QPushButton("Detect")
+        self._detect_btn = QPushButton("Search for installed AI's")
         self._detect_btn.setToolTip(
             "Look for local model servers running right now. Ports are not fixed "
             "— Unsloth's llama.cpp picks a new one each start — so this asks "
             "everything listening on loopback rather than guessing."
         )
         self._detect_btn.clicked.connect(self._on_detect)
-        form.addRow("Service:", self._row(self._service, self._detect_btn))
+        form.addRow("AI Service:", self._row(self._service, self._detect_btn))
 
         self._profile_label = QLabel("Tools:")
         self._profile = QComboBox()
@@ -347,7 +347,7 @@ class AIChatPanel(QDockWidget):
         self._rescan_btn.clicked.connect(self._on_rescan_workbenches)
         form.addRow("", self._rescan_btn)
 
-        self._skill_btn = QPushButton("Install agent skill")
+        self._skill_btn = QPushButton("(Re-)Install agent skill")
         self._skill_btn.setToolTip(
             "Make this addon's FreeCAD skill available to every agent CLI "
             "installed here (Claude Code, Codex, Antigravity/agy) by linking "
@@ -436,7 +436,7 @@ class AIChatPanel(QDockWidget):
         self._say_system(f"Selected the saved service, {name}.")
 
     def _on_service_picked(self, *_):
-        """A user changed Service, as opposed to settings being restored.
+        """A user changed AI Service, as opposed to settings being restored.
 
         The model list belongs to the service that produced it. Leaving it in
         place across a change let a model from one endpoint be saved against
@@ -453,7 +453,7 @@ class AIChatPanel(QDockWidget):
         self._on_service_changed()
 
     def _current_cli(self):
-        """The external CLI selected in Service, or None for the built-in agent."""
+        """The external CLI selected in AI Service, or None for the built-in agent."""
         return self._cli_choices.get(self._service.currentText())
 
     def _on_service_changed(self, *_):
@@ -469,7 +469,7 @@ class AIChatPanel(QDockWidget):
                       self._model_label, self._model_row,
                       self._profile_label, self._profile):
                 w.setVisible(False)
-            self._save_btn.setText("Launch")
+            self._save_btn.setText("Launch AI Service")
             if cli["cmd"]:
                 self._cmd.setText(cli["cmd"])
             return
@@ -685,9 +685,10 @@ class AIChatPanel(QDockWidget):
         if not cli["cmd"]:
             self._say_system("Type the command to run first.")
             return
-        # Launch is this row's Save: with a CLI selected the button never reaches
-        # the settings path below, so the permission choice would be read from
-        # disk as whatever it was before the user changed the dropdown.
+        # Launch AI Service is this row's Save: with a CLI selected the button
+        # never reaches the settings path below, so the permission choice would
+        # be read from disk as whatever it was before the user changed the
+        # dropdown.
         settings = load_settings()
         settings["ai_cli_permissions"] = self._perms.currentData()
         save_settings(settings)
@@ -854,7 +855,8 @@ class AIChatPanel(QDockWidget):
             # saved last, which is not the one shown in the dropdown.
             self._say_system(
                 f"{self._service.currentText()} runs in its own terminal — press "
-                "Launch in Settings and type there. Pick a service above to chat here."
+                "Launch AI Service in Settings and type there. Pick a service "
+                "above to chat here."
             )
             return
 

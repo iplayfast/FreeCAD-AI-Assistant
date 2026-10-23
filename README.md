@@ -14,19 +14,19 @@ imports outside the standard library are FreeCAD's own modules and PySide.
 
 ## Two ways to run a model
 
-The Service dropdown is one decision: who is doing the thinking.
+The AI Service dropdown is one decision: who is doing the thinking.
 
 **Local and self-hosted servers** answer inside the panel. Ollama is preconfigured;
 anything else OpenAI-compatible works via *Other*, or is found for you — press
-**Detect** and the addon asks every loopback listener whether it serves
-`/v1/models`. That is not the same as probing well-known ports: Unsloth's
+**Search for installed AI's** and the addon asks every loopback listener whether
+it serves `/v1/models`. That is not the same as probing well-known ports: Unsloth's
 llama.cpp child takes an ephemeral port that changes whenever you load a
 different model, so a fixed list would never find it.
 
 **Agent CLIs** — Claude Code, Antigravity CLI (`agy`), Codex — run in their own terminal on
 your existing subscription, and reach FreeCAD from outside. They need no API key
-here, because they already have their own. Pick one and press **Launch**, or use
-the *Launch Agent CLI* toolbar button.
+here, because they already have their own. Pick one and press
+**Launch AI Service**, or use the *Launch Agent CLI* toolbar button.
 
 A launched CLI arrives knowing nothing about the session it has been pointed at,
 so `AGENT_BRIEFING.md` is generated against the running FreeCAD and handed over:
@@ -58,7 +58,7 @@ Two buttons in the panel's settings are worth knowing about:
   commands it registers, so the agent is told what addons this machine has
   instead of hand-rolling geometry a workbench already builds. Runs itself the
   first time; press it again after installing or updating an addon.
-- **Install agent skill** — links `.claude/skills/freecad/SKILL.md` into the
+- **(Re-)Install agent skill** — links `.claude/skills/freecad/SKILL.md` into the
   skills directory of every agent CLI installed here (Claude Code
   `~/.claude/skills`, Codex `~/.codex/skills`, Antigravity and `agy`
   `~/.gemini/config/skills`), so a session started anywhere knows how to drive
@@ -240,6 +240,10 @@ freecadcmd run_checks.py    # all 13 modules; exits non-zero if any fail
 python3 run_checks.py       # the 4 that need no FreeCAD; skips the rest
 ```
 
+Run it from the copy FreeCAD actually loads — the one under `Mod/`. From a
+checkout anywhere else it aborts rather than reporting a green run for code it
+never opened; see the `sys.path` trap below for why it cannot just use yours.
+
 Those check the code. To check whether a *model* can actually drive it:
 
 ```bash
@@ -272,9 +276,17 @@ expecting an error message that had since been improved.
 `freecad/AIAssistant/rpc_server/tools.py` is deliberately FreeCAD-free so the registry unit-tests
 offline; keep FreeCAD imports inside functions there.
 
-Two `freecadcmd` traps worth knowing before you write a test script:
+The `freecadcmd` traps worth knowing before you write a test script:
 
 - `freecadcmd -c "..."` crashes. Write a `.py` file and run `freecadcmd script.py`.
+- The script name is resolved through `sys.path`, and **every** `Mod/` directory
+  is on it. `freecadcmd run_checks.py` from a checkout outside `Mod/` runs the
+  *installed* `Mod/AI/run_checks.py` — your file is never opened. The same goes
+  for the modules: `freecad` is a namespace package FreeCAD has already
+  populated from every `Mod/*/freecad`, so `sys.path.insert(0, …)` does not win
+  it back. Both halves silently come from the installed addon, and the run is
+  green for code that never executed. `run_checks.py` now detects this and
+  exits 1; a script of your own will not.
 - `print` and `FreeCAD.Console` output interleaves with OCCT progress spam, and
   anything still buffered is discarded when `sys.exit` raises — print with
   `flush=True` or the summary vanishes and the run looks silent.

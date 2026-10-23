@@ -16,8 +16,12 @@ than about the runner.
 """
 
 import importlib
+import os
 import sys
 import traceback
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CWD = os.path.abspath(os.getcwd())
 
 # Every module with a demo(). Registry and handlers first: a break there fails
 # everything after it, and seeing that first is the useful ordering.
@@ -39,7 +43,32 @@ MODULES = (
 
 
 def main() -> int:
-    sys.path.insert(0, __file__.rsplit("/", 1)[0])
+    # Two ways this suite can test an addon other than the one you are editing,
+    # and both of them print "13 passed".
+    #
+    # 1. freecadcmd imports the *script* by basename through sys.path, and every
+    #    Mod/* directory is on it. Run `freecadcmd run_checks.py` from a
+    #    checkout outside Mod/ and FreeCAD runs the installed Mod/AI/
+    #    run_checks.py instead — your file is never opened. Only the cwd knows
+    #    where you meant; __file__ already points at the other copy.
+    # 2. `freecad` is a namespace package FreeCAD populates from every
+    #    Mod/*/freecad before this runs, so the sys.path.insert below does not
+    #    win either: the modules come from the installed addon too.
+    #
+    # Same green light the __main__ guard gives, one level up - so check both.
+    if CWD != HERE and os.path.isdir(os.path.join(CWD, "freecad", "AIAssistant")):
+        print(f"run_checks: ABORT - you are in\n"
+              f"  {CWD}\n"
+              f"  but FreeCAD ran the copy in\n"
+              f"  {HERE}\n"
+              f"  (it resolves the script name through sys.path, and every Mod/ "
+              f"entry is on it).\n"
+              f"  Nothing here would test your edits. Run the suite from the "
+              f"copy FreeCAD\n  loads, or symlink this checkout into Mod/.",
+              file=sys.stderr, flush=True)
+        return 1
+
+    sys.path.insert(0, HERE)
     failed, skipped = [], []
 
     for name in MODULES:
@@ -49,6 +78,16 @@ def main() -> int:
             # No FreeCAD (plain python3): not a failure, just out of reach here.
             skipped.append((name, str(e)))
             continue
+        # Case 2 from main()'s note: the script is the right one, the modules
+        # are somebody else's.
+        loaded = os.path.abspath(getattr(module, "__file__", "") or "")
+        if not loaded.startswith(HERE + os.sep):
+            print(f"run_checks: ABORT - imported {name} from\n"
+                  f"  {loaded}\n"
+                  f"  instead of {HERE}. Nothing here would test your edits.\n"
+                  f"  Run it from the copy FreeCAD loads, or symlink this "
+                  f"checkout into Mod/.", file=sys.stderr, flush=True)
+            return 1
         try:
             module.demo()
         except Exception:

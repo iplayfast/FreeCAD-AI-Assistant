@@ -588,8 +588,12 @@ from .bim_handlers import demo; demo()"``
         )
 
         # Lookups: a real page, and a miss that suggests rather than raises.
-        assert "Arch" in search_wiki("Arch_Wall")["page"]
-        assert "suggestions" in search_wiki("zzzz_no_such_page_zzzz")
+        # The mirror is an optional clone the user symlinks in (see README), so
+        # a fresh checkout has none — and asserting through it unconditionally
+        # made run_checks red on every machine but the one that wrote it.
+        if os.path.isdir(os.path.join(_ADDON_DIR, "FreeCAD-Documentation-Project", "wiki")):
+            assert "Arch" in search_wiki("Arch_Wall")["page"]
+            assert "suggestions" in search_wiki("zzzz_no_such_page_zzzz")
         assert "bim" == get_skill("bim")["skill"]
         try:
             get_skill("nope")
