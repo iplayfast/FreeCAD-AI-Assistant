@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Active-view orientation, sizing, and screenshot capture."""
 
 from typing import Any

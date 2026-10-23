@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Standalone MCP server: bridges MCP-over-stdio to this addon's XML-RPC port.
 
 A CLI's mcp_config points its ``command``/``args`` at this file, spawns it as a

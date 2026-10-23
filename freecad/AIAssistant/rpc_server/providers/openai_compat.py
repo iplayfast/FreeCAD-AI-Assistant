@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """OpenAI Chat Completions adapter.
 
 One adapter for every backend that speaks the OpenAI /chat/completions format:

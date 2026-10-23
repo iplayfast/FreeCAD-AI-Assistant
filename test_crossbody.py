@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Self-check for the two defects the bearing run exposed. Run:
 
     freecadcmd test_crossbody.py

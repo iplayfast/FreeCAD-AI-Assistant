@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """The AI console: an ``AI(...)`` function for FreeCAD's Python console.
 
 Instead of a Qt dock, the assistant is driven from FreeCAD's built-in Python

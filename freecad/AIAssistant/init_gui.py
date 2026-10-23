@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """AI Assistant workbench: chat panel, AI() console, and the MCP RPC server.
 
 All three faces drive the one tool registry in ``rpc_server`` — the panel and

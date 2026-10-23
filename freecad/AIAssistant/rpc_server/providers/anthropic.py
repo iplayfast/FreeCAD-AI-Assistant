@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Native Anthropic Messages API adapter.
 
 Wire contract per the Anthropic Messages API: POST /v1/messages with

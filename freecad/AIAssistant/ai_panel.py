@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """The AI Assistant dock panel: a Qt face over the shared tool registry.
 
 The panel owns no tools, no provider code and no settings of its own. It drives

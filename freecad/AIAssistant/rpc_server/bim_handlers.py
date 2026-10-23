@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Architectural (Arch/BIM) tools, plus the local FreeCAD documentation lookup.
 
 Ported from the AI workbench's own tool layer, which these were the only truly

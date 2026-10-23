@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """GUI-thread task dispatch for the RPC server.
 
 The XML-RPC server runs in its own thread. FreeCAD APIs that touch the GUI

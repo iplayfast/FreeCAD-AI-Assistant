@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Object creation dispatch for the RPC ``create_object`` handler.
 
 The legacy ``_create_object_gui`` mixed three flows: FEM mesh (Gmsh) with

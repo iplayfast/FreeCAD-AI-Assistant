@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Run the agent against several real tasks and rank what it gets wrong.
 
     python3 run_agent_suite.py               # every task

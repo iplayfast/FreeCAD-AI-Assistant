@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """The tool registry: the single source of truth for FreeCAD operations.
 
 Each operation is defined exactly once here — name, description, JSON-Schema

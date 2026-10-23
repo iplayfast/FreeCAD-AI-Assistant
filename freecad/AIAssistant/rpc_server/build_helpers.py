@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Shortcuts for building PartDesign geometry from ``execute_code``.
 
 Adapted from the generic (non-gear) half of GearWorkBench's ``util.py``:

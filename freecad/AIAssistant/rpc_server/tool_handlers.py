@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """FreeCAD operation handlers, registered into the tool registry.
 
 Importing this module (at addon startup, inside FreeCAD) populates

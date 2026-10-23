@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Persistence of MCP RPC server settings under FreeCAD's user app data dir."""
 
 import json

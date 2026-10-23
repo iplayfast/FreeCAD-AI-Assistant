@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Provider-neutral types and the HTTP helper shared by the AI adapters.
 
 The agent loop speaks in these neutral shapes; each provider adapter translates

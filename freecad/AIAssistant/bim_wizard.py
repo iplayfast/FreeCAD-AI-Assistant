@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """The BIM Wizard: lay out a floorplan wall by wall, with no AI involved.
 
 Its own dialog and its own workbench command, deliberately separate from the

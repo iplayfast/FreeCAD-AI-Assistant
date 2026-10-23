@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Property assignment from JSON-friendly dicts onto FreeCAD document objects."""
 
 import json

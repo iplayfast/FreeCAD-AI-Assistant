@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """The agent loop: provider + tool registry, driven to completion.
 
 Provider-and-FreeCAD-agnostic. It calls a provider for one assistant turn,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Run every module's ``demo()`` self-check, and report which ones failed.
 
     freecadcmd run_checks.py      # all of them, ~1s

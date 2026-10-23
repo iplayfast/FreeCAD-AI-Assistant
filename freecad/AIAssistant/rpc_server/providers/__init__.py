@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """AI provider layer: a Provider protocol with two implementations.
 
   * AnthropicProvider   — native Claude Messages API

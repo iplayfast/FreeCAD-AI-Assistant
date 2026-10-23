@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Qt Command classes for the MCP Addon workbench menu.
 
 Defines the two toolbar/menu entries (Stop, Toggle Auto-Start), plus the

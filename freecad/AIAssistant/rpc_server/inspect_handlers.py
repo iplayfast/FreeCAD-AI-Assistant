@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Read-only inspection: what FreeCAD said, what the shape is, what fits.
 
 These answer the questions a model could not previously ask at all. It could

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Persistent namespace for user-supplied code (execute_code / execute_code_async).
 
 Kept separate from any module's own ``globals()`` so executed code can't clobber

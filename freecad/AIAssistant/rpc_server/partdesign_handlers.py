@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """PartDesign operations, registered into the tool registry.
 
 ``build_helpers`` already holds the implementations, adapted from GearWorkBench.

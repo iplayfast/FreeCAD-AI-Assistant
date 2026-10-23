@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Drive one agent turn against a real provider and judge what it BUILT.
 
     freecadcmd test_bearing_run.py                        # default: 608 bearing
