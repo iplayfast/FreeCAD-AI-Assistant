@@ -192,18 +192,22 @@ def mass_properties(doc_name: str, obj_name: str, density: float = 0.0) -> dict:
         "type": "object",
         "properties": {
             "doc_name": _DOC,
-            "a_name": {"type": "string", "description": "First object."},
-            "b_name": {"type": "string", "description": "Second object."},
-            "a_sub": {"type": "string", "description": "Subelement of a, e.g. 'Face3'."},
-            "b_sub": {"type": "string", "description": "Subelement of b."},
+            # obj1_name, not a_name: nothing guesses a single letter, and a live
+            # session sent object1/object2 - close enough to mean this and far
+            # enough that the did-you-mean hint could not even suggest a_name.
+            "obj1_name": {"type": "string", "description": "First object."},
+            "obj2_name": {"type": "string", "description": "Second object."},
+            "obj1_sub": {"type": "string",
+                         "description": "Subelement of the first, e.g. 'Face3'."},
+            "obj2_sub": {"type": "string", "description": "Subelement of the second."},
         },
-        "required": ["doc_name", "a_name", "b_name"],
+        "required": ["doc_name", "obj1_name", "obj2_name"],
     },
 )
-def measure_distance(doc_name: str, a_name: str, b_name: str,
-                     a_sub: str = "", b_sub: str = "") -> dict:
+def measure_distance(doc_name: str, obj1_name: str, obj2_name: str,
+                     obj1_sub: str = "", obj2_sub: str = "") -> dict:
     doc = _doc(doc_name)
-    sa, sb = _shape(doc, a_name, a_sub), _shape(doc, b_name, b_sub)
+    sa, sb = _shape(doc, obj1_name, obj1_sub), _shape(doc, obj2_name, obj2_sub)
     dist, points, infos = sa.distToShape(sb)
     p1, p2 = points[0] if points else (None, None)
     return {
@@ -218,21 +222,37 @@ def measure_distance(doc_name: str, a_name: str, b_name: str,
 @register(
     "check_interference",
     "Do these solids overlap, and by how much? Returns the shared volume for "
-    "every pair. The question a printed assembly answers the expensive way.",
+    "every pair. The question a printed assembly answers the expensive way. "
+    "Omit obj_names to test every solid in the document against every other.",
     {
         "type": "object",
         "properties": {
             "doc_name": _DOC,
             "obj_names": {"type": "array", "items": {"type": "string"},
-                          "description": "Two or more objects to test pairwise."},
+                          "description": "Two or more objects to test pairwise. "
+                                         "Omit for every solid in the document."},
         },
-        "required": ["doc_name", "obj_names"],
+        "required": ["doc_name"],
     },
 )
-def check_interference(doc_name: str, obj_names: list) -> dict:
+def check_interference(doc_name: str, obj_names: list | None = None) -> dict:
     doc = _doc(doc_name)
+    if not obj_names:
+        # "Does anything in here overlap" is the question people actually have,
+        # and it names no objects. Solids only: a sketch or datum plane has no
+        # volume to share, and pairing them produces noise, not findings.
+        # A Body's own features (Pad, Pocket, ...) each carry a solid that is a
+        # stage of that one body, so including them reports every body as 100%
+        # interfering with itself. The Body already stands for all of them.
+        in_body = {f.Name for o in doc.Objects if o.TypeId == "PartDesign::Body"
+                   for f in o.Group}
+        obj_names = [o.Name for o in doc.Objects if o.Name not in in_body
+                     and getattr(getattr(o, "Shape", None), "Solids", None)]
     if len(obj_names) < 2:
-        raise ValueError("check_interference needs at least two objects.")
+        raise ValueError(
+            f"check_interference needs at least two solids; '{doc_name}' has "
+            f"{len(obj_names)}."
+        )
     shapes = {n: _shape(doc, n) for n in obj_names}
     pairs = []
     for i, a in enumerate(obj_names):
@@ -403,6 +423,8 @@ def demo() -> None:
     """Self-check against real geometry. Run: ``freecadcmd`` with this imported."""
     import Part
 
+    from .tools import call_tool
+
     doc = FreeCAD.newDocument("InspectDemo")
     try:
         box = doc.addObject("Part::Box", "Box")
@@ -428,7 +450,10 @@ def demo() -> None:
         assert abs(d["distance"] - 2.0) < 1e-6 and not d["touching"], d
 
         # Subelement addressing: the +X face of Box is 2 mm from Far's -X face.
-        assert measure_distance("InspectDemo", "Box", "Far", a_sub="Face2")["distance"] >= 0
+        assert measure_distance("InspectDemo", "Box", "Far", obj1_sub="Face2")["distance"] >= 0
+        # The names a session reaches for must survive the registry's front door.
+        assert call_tool("measure_distance", {"doc_name": "InspectDemo",
+                                             "object1": "Box", "object2": "Far"})["distance"] > 0
 
         inter = check_interference("InspectDemo", ["Box", "Far", "Over"])
         assert inter["any_interference"], inter
@@ -436,6 +461,13 @@ def demo() -> None:
         assert abs(pair["overlap_volume"] - 500.0) < 1e-6, pair
         gapped = [p for p in inter["pairs"] if {p["a"], p["b"]} == {"Box", "Far"}][0]
         assert not gapped["interferes"] and abs(gapped["gap"] - 2.0) < 1e-6, gapped
+
+        # Omitted obj_names sweeps every solid in the document - the form the
+        # question "does anything in here overlap" actually takes.
+        swept = check_interference("InspectDemo")
+        assert swept["any_interference"], swept
+        named = {p["a"] for p in swept["pairs"]} | {p["b"] for p in swept["pairs"]}
+        assert named >= {"Box", "Far", "Over"}, swept
 
         cs = cross_section("InspectDemo", "Box", axis="z", count=3)
         assert len(cs["sections"]) == 3, cs

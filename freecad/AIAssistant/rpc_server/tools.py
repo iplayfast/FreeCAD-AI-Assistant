@@ -38,7 +38,24 @@ _ARG_SYNONYMS = {
     "view": "view_name",
     "sketch": "sketch_name",
     "body": "body_name",
+    # Every one below is a name a live session actually sent and was rejected
+    # for. "path" is the odd one out in a registry of *_name arguments, so
+    # file_path is the natural reach for it; "operation" is what lookup_freecad_op
+    # asks for in English while the schema says query; "size" is the ordinary
+    # word for a text label's height.
+    "file_path": "path",
+    "filename": "path",
+    "filepath": "path",
+    "operation": "query",
+    "size": "height",
+    "object1": "obj1_name",
+    "object2": "obj2_name",
 }
+
+# Names for a single point, where the tool's schema spells it as scalar axes.
+# Not "placement": that carries a rotation too, and quietly keeping only its
+# translation would build the part in the wrong orientation and say nothing.
+_VECTOR_ARGS = ("position", "pos", "center", "location")
 
 
 @dataclass(frozen=True)
@@ -266,6 +283,31 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
     for synonym, canonical in _ARG_SYNONYMS.items():
         if synonym in args and canonical in accepted and canonical not in args:
             args[canonical] = args.pop(synonym)
+
+    # One point where the schema has scalars. create_cylinder and create_sphere
+    # take x/y/z, but a point is one idea and FreeCAD's own API takes it as one
+    # Vector, so a session sends position={x,y,z} and gets rejected for an
+    # argument it was right to think in. A name-to-name synonym cannot fix that:
+    # the value has to be split.
+    for vector in _VECTOR_ARGS:
+        if vector not in args or vector in accepted:
+            continue
+        value = args[vector]
+        if isinstance(value, dict):
+            parts = {k.lower(): v for k, v in value.items()}
+        elif isinstance(value, (list, tuple)):
+            parts = dict(zip(("x", "y", "z"), value))
+        else:
+            continue    # a scalar or string position is not a point we can split
+        # Every component must be an argument this tool has. Dropping the ones
+        # that are not (a z on sketch_circle, which is 2D) would silently throw
+        # away what the caller asked for; better to leave it unknown and let the
+        # error below name what IS accepted.
+        if not parts or any(k not in accepted for k in parts):
+            continue
+        args.pop(vector)
+        for axis, v in parts.items():
+            args.setdefault(axis, v)
 
     # Unknown keys BEFORE missing ones. A model that sent object_name= where
     # obj_name was wanted used to be told only "missing obj_name", with its own
@@ -549,6 +591,41 @@ def demo() -> None:
         assert call_tool("named", {"body_name": "Plate"}) == {"body_name": "Plate", "name": ""}
         # A synonym still resolves - that is _ARG_SYNONYMS' job, not cross-fill.
         assert call_tool("named", {"body": "Plate"})["body_name"] == "Plate"
+
+        # One point, scalar axes: a session sent position={x,y,z} to
+        # create_cylinder, which was right about the idea and wrong about the
+        # spelling. Both shapes a point arrives in get split.
+        @register("placed", "Scalar axes.",
+                  {"type": "object",
+                   "properties": {k: {"type": "number"} for k in ("x", "y", "z")}})
+        def _placed(x: float = 0, y: float = 0, z: float = 0) -> dict:
+            return {"x": x, "y": y, "z": z}
+
+        assert call_tool("placed", {"position": {"x": 1, "y": 2, "z": 3}}) == {"x": 1, "y": 2, "z": 3}
+        assert call_tool("placed", {"center": [4, 5, 6]}) == {"x": 4, "y": 5, "z": 6}
+        # An axis given outright beats the same axis inside the point.
+        assert call_tool("placed", {"position": {"x": 1, "y": 2, "z": 3}, "x": 9})["x"] == 9
+
+        @register("flat", "Two axes only.",
+                  {"type": "object", "properties": {k: {"type": "number"} for k in ("x", "y")}})
+        def _flat(x: float = 0, y: float = 0) -> dict:
+            return {"x": x, "y": y}
+
+        # A z this tool has nowhere to put is NOT quietly dropped.
+        try:
+            call_tool("flat", {"position": {"x": 1, "y": 2, "z": 3}})
+            assert False, "expected the unusable z to be reported"
+        except ValueError as e:
+            assert "position" in str(e) and "accepts: x, y" in str(e), e
+        assert call_tool("flat", {"position": {"x": 1, "y": 2}}) == {"x": 1, "y": 2}
+
+        # A tool with its own `position` argument keeps it whole.
+        @register("labelled", "Takes a point as one value.",
+                  {"type": "object", "properties": {"position": {"type": "object"}}})
+        def _labelled(position: dict = None) -> dict:
+            return {"position": position}
+
+        assert call_tool("labelled", {"position": {"x": 1}}) == {"position": {"x": 1}}
 
         # transaction() is a no-op without FreeCAD, and re-raises either way.
         with transaction("noop"):

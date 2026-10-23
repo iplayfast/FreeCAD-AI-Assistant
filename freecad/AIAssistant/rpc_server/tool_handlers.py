@@ -16,6 +16,7 @@ import ast
 import base64
 import contextlib
 import difflib
+import importlib
 import io
 import json
 import os
@@ -154,11 +155,23 @@ def save_document(doc_name: str, path: str = "") -> dict:
     return {"saved_to": doc.FileName}
 
 
+# There is no FreeCAD.export. The generic entry point export_file used to call
+# has never existed on the FreeCAD module, so every export raised AttributeError
+# whatever the extension - and nothing exercised the tool, so the suite stayed
+# green. These are the modules FreeCAD's own File -> Export routes each format to.
+_EXPORT_MODULES = {
+    "step": "Import", "stp": "Import", "iges": "Import", "igs": "Import",
+    "brep": "Part", "brp": "Part",
+    "stl": "Mesh", "obj": "Mesh", "ply": "Mesh", "amf": "Mesh",
+    "dxf": "importDXF", "svg": "importSVG", "ifc": "exportIFC",
+}
+
+
 @register(
     "export_file",
     "Export objects to a file. The format follows the extension: .step/.stp, "
-    ".iges, .stl, .ifc, .dxf, .svg, .obj. Omit object_names to export the "
-    "whole document.",
+    ".iges, .brep, .stl, .obj, .ply, .amf, .dxf, .svg, .ifc. Omit object_names "
+    "to export the whole document.",
     {
         "type": "object",
         "properties": {
@@ -181,8 +194,29 @@ def export_file(doc_name: str, path: str, object_names: list | None = None) -> d
         objs = list(doc.Objects)
     if not objs:
         raise ValueError(f"Document '{doc_name}' has nothing to export.")
-    FreeCAD.export(objs, path)
-    return {"exported_to": path, "object_count": len(objs)}
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    module = _EXPORT_MODULES.get(ext)
+    if module is None:
+        why = f"No exporter for '.{ext}'" if ext else f"'{path}' has no file extension"
+        raise ValueError(
+            f"{why}. The format follows the extension; supported: "
+            f"{', '.join('.' + e for e in sorted(_EXPORT_MODULES))}."
+        )
+    try:
+        exporter = importlib.import_module(module)
+    except ImportError:
+        raise ValueError(
+            f"Exporting .{ext} needs FreeCAD's {module} module, which this build "
+            "does not provide."
+        )
+    exporter.export(objs, path)
+    if not os.path.isfile(path):
+        # Several of these exporters report nothing and write nothing when they
+        # reject the input (a mesh exporter handed a sketch, say). Claiming
+        # success for a file that is not there is the worse failure.
+        raise ValueError(f"{module}.export wrote no file at '{path}'.")
+    return {"exported_to": path, "object_count": len(objs),
+            "bytes": os.path.getsize(path), "exporter": module}
 
 
 def _document_solids(doc) -> int:
@@ -205,17 +239,25 @@ def _document_solids(doc) -> int:
 @register(
     "undo",
     "Undo the last operation(s). Each tool call is one undo step, so this "
-    "reverts whole tool calls rather than individual API calls.",
+    "reverts whole tool calls rather than individual API calls. Defaults to "
+    "the active document.",
     {
         "type": "object",
         "properties": {
-            "doc_name": _DOC_NAME,
+            "doc_name": {"type": "string",
+                         "description": "Target document. Omit for the active one."},
             "steps": {"type": "integer", "description": "How many steps to undo (default 1)."},
         },
-        "required": ["doc_name"],
     },
 )
-def undo(doc_name: str, steps: int = 1) -> dict:
+def undo(doc_name: str = "", steps: int = 1) -> dict:
+    # "Undo that" names no document and needs none: the thing just done was done
+    # to whatever is active. Every other tool still requires doc_name, because
+    # with several documents open, acting on the wrong one is silent.
+    if not doc_name:
+        if FreeCAD.ActiveDocument is None:
+            raise ValueError("No active document to undo in.")
+        doc_name = FreeCAD.ActiveDocument.Name
     doc = _doc(doc_name)
     before_objects, before_solids = len(doc.Objects), _document_solids(doc)
     for _ in range(max(1, int(steps))):
@@ -1088,11 +1130,13 @@ def _text_sketch(doc, name, text, font, height):
             },
             "normal": {
                 "type": "object",
-                "description": "Outward face normal, {x,y,z}. The label is cut along -normal.",
+                "description": "Outward face normal, {x,y,z}. The label is cut along "
+                               "-normal. Defaults to +Z, i.e. a label on the top face.",
             },
             "up": {
                 "type": "object",
-                "description": "In-plane direction of the text's vertical axis, {x,y,z}.",
+                "description": "In-plane direction of the text's vertical axis, {x,y,z}. "
+                               "Defaults to +Y, which reads upright on a +Z face.",
             },
             "font": {
                 "type": "string",
@@ -1114,7 +1158,7 @@ def _text_sketch(doc, name, text, font, height):
                 "description": "engrave = Pocket (default), emboss = Pad.",
             },
         },
-        "required": ["doc_name", "body_name", "text", "position", "normal", "up"],
+        "required": ["doc_name", "body_name", "text", "position"],
     },
 )
 def create_text_label(
@@ -1122,8 +1166,11 @@ def create_text_label(
     body_name: str,
     text: str,
     position,
-    normal,
-    up,
+    # An orientation with an obvious answer should not be mandatory: a label on
+    # the top face reading upright is what "put a label here" means, and demanding
+    # two vectors made the tool uncallable without inventing them.
+    normal=None,
+    up=None,
     font: str | None = None,
     height: float = 2.5,
     depth: float = 0.5,
@@ -1137,7 +1184,9 @@ def create_text_label(
         raise ValueError("mode must be 'engrave' or 'emboss'")
 
     font = _pick_font(font)
-    pos, n, up_v = _v(position, "position"), _v(normal, "normal"), _v(up, "up")
+    pos = _v(position, "position")
+    n = _v(normal, "normal") if normal is not None else FreeCAD.Vector(0, 0, 1)
+    up_v = _v(up, "up") if up is not None else FreeCAD.Vector(0, 1, 0)
     if n.Length < 1e-9 or up_v.Length < 1e-9:
         raise ValueError("normal and up must be non-zero")
     n.normalize()
@@ -1285,6 +1334,21 @@ def demo() -> None:
         assert doc.getObject("Race001") is not None
         assert doc.getObject(made["object_name"]) is not doc.getObject(again["object_name"])
         assert edit_object(doc.Name, "Race001", {"Length": 7})["object_name"] == "Race001"
+
+        # export_file called FreeCAD.export, which does not exist, so the tool
+        # raised AttributeError for every format while the suite stayed green.
+        # A real file on disk with bytes in it is the only check that catches that.
+        with tempfile.TemporaryDirectory() as out:
+            for ext, module in (("step", "Import"), ("stl", "Mesh"), ("brep", "Part")):
+                path = os.path.join(out, "race." + ext)
+                res = export_file(doc.Name, path, ["Race"])
+                assert res["exporter"] == module, res
+                assert res["bytes"] > 0 and os.path.isfile(path), res
+            try:
+                export_file(doc.Name, os.path.join(out, "race.xyz"), ["Race"])
+                raise AssertionError("an unknown extension must be refused")
+            except ValueError as exc:
+                assert ".step" in str(exc), exc   # the message lists what works
 
         spaced = create_document("Demo Doc Name")
         try:
