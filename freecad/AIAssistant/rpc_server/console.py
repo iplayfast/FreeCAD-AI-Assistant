@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 
@@ -94,6 +95,20 @@ _BRIEFING_NAME = "AGENT_BRIEFING.md"
 # result in conversation history can be. No entry (e.g. Pi CLI) means no known
 # convention - the briefing + opening prompt stays the only mechanism for it.
 _CONVENTION_FILES = {"claude": "CLAUDE.md", "codex": "AGENTS.md", "agy": "GEMINI.md"}
+
+# The addon ships one skill - the durable how-to for driving this server, as
+# opposed to the briefing's per-session facts (port, status, live tool list).
+# Every agent that has skills at all looks for <root>/<name>/SKILL.md, so
+# installing is placing one file; these are the user-level roots, verified by
+# what each tool already keeps there. Antigravity and the `agy` CLI share
+# ~/.gemini/config. Pi has no skills mechanism, so it gets the convention file
+# and the briefing only.
+_SKILL_NAME = "freecad"
+_SKILL_ROOTS = {
+    "Claude Code": "~/.claude/skills",
+    "Codex": "~/.codex/skills",
+    "Antigravity / agy": "~/.gemini/config/skills",
+}
 # Absolute, because "this directory" is only true if the CLI actually starts in
 # the addon directory — and a CLI that resumes a previous session, or that a
 # terminal drops in $HOME, sees a name that matches nothing and asks "read
@@ -204,6 +219,57 @@ def _addon_dir() -> str:
     # so the addon root is four directories up.
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))))
+
+
+def skill_source() -> str:
+    """The skill directory this addon ships — the one copy anyone should edit."""
+    return os.path.join(_addon_dir(), ".claude", "skills", _SKILL_NAME)
+
+
+def install_skill(roots: dict | None = None) -> list:
+    """Make the shipped skill discoverable by every agent CLI installed here.
+
+    A symlink rather than a copy: a copy is a second source that goes stale
+    silently, and having one source is the whole reason the skill lives in the
+    addon. Windows refuses symlinks without developer mode or elevation, so
+    fall back to copying there and report which happened.
+
+    Only roots whose parent already exists are touched — ``~/.codex/skills``
+    means Codex is installed on this machine, while creating ``~/.gemini`` for
+    an agent nobody here has would be writing into another tool's private
+    config on spec. A destination holding files this addon did not put there is
+    left alone rather than replaced; it is someone's own skill of the same name.
+    """
+    source = skill_source()
+    results = []
+    for label, root in (roots or _SKILL_ROOTS).items():
+        root = os.path.expanduser(root)
+        dest = os.path.join(root, _SKILL_NAME)
+        if not os.path.isdir(os.path.dirname(root)):
+            results.append({"agent": label, "path": dest, "status": "not installed"})
+            continue
+        try:
+            if os.path.islink(dest):
+                os.unlink(dest)
+            elif os.path.isdir(dest):
+                if set(os.listdir(dest)) - {"SKILL.md"}:
+                    results.append({"agent": label, "path": dest,
+                                    "status": "left alone (has other files)"})
+                    continue
+                shutil.rmtree(dest)
+            elif os.path.exists(dest):
+                os.unlink(dest)
+            os.makedirs(root, exist_ok=True)
+            try:
+                os.symlink(source, dest)
+                status = "linked"
+            except (OSError, NotImplementedError, AttributeError):
+                shutil.copytree(source, dest)
+                status = "copied"
+        except Exception as e:
+            status = f"failed: {e}"
+        results.append({"agent": label, "path": dest, "status": status})
+    return results
 
 
 def scan_clis() -> list:
@@ -1429,5 +1495,34 @@ def demo() -> None:
     finally:
         (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
          m._offer_no_key, m._launch_cli, m._open_keys_page) = real
+
+    # The skill the addon ships, and what the Install button does with it.
+    assert os.path.isfile(os.path.join(skill_source(), "SKILL.md")), \
+        f"the addon must ship {_SKILL_NAME}/SKILL.md at {skill_source()}"
+    with tempfile.TemporaryDirectory() as tmp:
+        present = os.path.join(tmp, "agent", "skills")   # parent exists: installed
+        os.makedirs(os.path.dirname(present))
+        missing = os.path.join(tmp, "nobody", "skills")   # parent absent: not installed
+        roots = {"Present": present, "Missing": missing}
+
+        res = install_skill(roots)
+        assert res[0]["status"] == "linked", res
+        assert os.path.isfile(os.path.join(present, _SKILL_NAME, "SKILL.md")), res
+        # Never create config for an agent that is not here.
+        assert res[1]["status"] == "not installed", res
+        assert not os.path.exists(missing), res
+
+        # Pressing the button twice is not an error and does not nest links.
+        assert install_skill(roots)[0]["status"] == "linked"
+        assert os.path.isfile(os.path.join(present, _SKILL_NAME, "SKILL.md"))
+
+        # Someone else's skill of the same name survives the button.
+        dest = os.path.join(present, _SKILL_NAME)
+        os.unlink(dest)
+        os.makedirs(dest)
+        with open(os.path.join(dest, "theirs.md"), "w") as f:
+            f.write("not ours")
+        assert install_skill(roots)[0]["status"].startswith("left alone"), install_skill(roots)
+        assert os.path.isfile(os.path.join(dest, "theirs.md"))
 
     print("console demo: all checks passed")

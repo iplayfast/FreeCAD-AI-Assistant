@@ -52,6 +52,21 @@ install). Developed against FreeCAD 26.3.
 Pick **AI Assistant** from the workbench dropdown. The toolbar has three commands:
 toggle the chat panel, launch an agent CLI, and the BIM wizard.
 
+Two buttons in the panel's settings are worth knowing about:
+
+- **Rescan local workbenches** — cycles every installed workbench to find what
+  commands it registers, so the agent is told what addons this machine has
+  instead of hand-rolling geometry a workbench already builds. Runs itself the
+  first time; press it again after installing or updating an addon.
+- **Install agent skill** — links `.claude/skills/freecad/SKILL.md` into the
+  skills directory of every agent CLI installed here (Claude Code
+  `~/.claude/skills`, Codex `~/.codex/skills`, Antigravity and `agy`
+  `~/.gemini/config/skills`), so a session started anywhere knows how to drive
+  this server. A CLI launched from the panel already finds it without this,
+  because it starts in the addon directory. It links rather than copies, so
+  editing that one file updates every agent — but press it again if the addon
+  directory itself moves.
+
 ### Optional: the wiki mirror
 
 The `search_wiki` tool reads a local mirror of the FreeCAD wiki. Clone it and

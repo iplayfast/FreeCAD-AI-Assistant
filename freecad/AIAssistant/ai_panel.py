@@ -347,6 +347,19 @@ class AIChatPanel(QDockWidget):
         self._rescan_btn.clicked.connect(self._on_rescan_workbenches)
         form.addRow("", self._rescan_btn)
 
+        self._skill_btn = QPushButton("Install agent skill")
+        self._skill_btn.setToolTip(
+            "Make this addon's FreeCAD skill available to every agent CLI "
+            "installed here (Claude Code, Codex, Antigravity/agy) by linking "
+            "it into their skills directory, so a session started anywhere "
+            "knows how to drive this server. A CLI launched from this panel "
+            "already finds it without this, because it starts in the addon "
+            "directory. Linked, not copied — editing the addon's SKILL.md "
+            "updates all of them."
+        )
+        self._skill_btn.clicked.connect(self._on_install_skill)
+        form.addRow("", self._skill_btn)
+
         self._save_btn = QPushButton("Save")
         self._save_btn.clicked.connect(self._on_save_settings)
         form.addRow("", self._save_btn)
@@ -514,6 +527,24 @@ class AIChatPanel(QDockWidget):
             )
         finally:
             self._rescan_btn.setEnabled(True)
+
+    def _on_install_skill(self):
+        """Link the shipped skill into every agent CLI's skills directory."""
+        from .rpc_server.console import install_skill
+
+        try:
+            results = install_skill()
+        except Exception as e:
+            self._say_system(f"Installing the skill failed: {e}")
+            return
+        # Report every agent, including the ones skipped: "nothing happened for
+        # Codex" is the answer to "why does my Codex session not see it", and a
+        # button that silently does less than its label says is worse than one
+        # that says so.
+        lines = [f"  {r['agent']}: {r['status']}"
+                 + (f" → {r['path']}" if r["status"] in ("linked", "copied") else "")
+                 for r in results]
+        self._say_system("FreeCAD skill install:\n" + "\n".join(lines))
 
     def _on_save_settings(self):
         cli = self._current_cli()
