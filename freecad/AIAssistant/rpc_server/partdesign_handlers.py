@@ -50,10 +50,36 @@ def _doc(doc_name: str):
         raise ValueError(f"Document '{doc_name}' not found.")
 
 
+def _inventory(doc, limit: int = 30) -> str:
+    """What is actually in ``doc``: Name, plus Label where the two differ."""
+    have = [o.Name if o.Label == o.Name else f"{o.Name} (Label '{o.Label}')"
+            for o in doc.Objects]
+    if len(have) > limit:
+        have = have[:limit] + [f"... and {len(have) - limit} more"]
+    return ", ".join(have) or "no objects"
+
+
 def _obj(doc, name: str, kind: str | None = None):
     o = doc.getObject(name)
     if o is None:
-        raise ValueError(f"Object '{name}' not found in '{doc.Name}'.")
+        # FreeCAD uniquifies Name on a collision but leaves Label as asked for,
+        # so a second pad is Name='Pad001' with Label='Pad' - and a caller that
+        # chose that name is looking for its Label. _sketch in bim_handlers has
+        # resolved both ways since it was written, for the same reason.
+        matches = doc.getObjectsByLabel(name)
+        if len(matches) > 1:
+            raise ValueError(
+                f"'{name}' is the Label of {len(matches)} objects in '{doc.Name}': "
+                f"{', '.join(m.Name for m in matches)}. Pass one of those names."
+            )
+        if not matches:
+            # Naming it is what lets the next call be right. Every builder tool
+            # returns the name it created; a smoke test asked for 'Pad' after
+            # padding, got only "not found", and had nowhere to go from there.
+            raise ValueError(
+                f"Object '{name}' not found in '{doc.Name}'. It has: {_inventory(doc)}"
+            )
+        o = matches[0]
     if kind and o.TypeId != kind:
         raise ValueError(f"'{name}' is a {o.TypeId}, expected {kind}.")
     return o
@@ -540,11 +566,23 @@ def demo() -> None:
         # Parametric means the dimension is DRIVEN, not merely correct once.
         call_tool("create_varset", {"doc_name": doc_name, "variables": {"Thickness": 9}})
         bound = call_tool("bind_expression", {"doc_name": doc_name, "obj_name": padded["feature_name"],
-                                              "property": "Length", "expression": "Vars.Thickness"})
+                                              "property_name": "Length",
+                                              "expression": "Vars.Thickness"})
         assert bound["value"] == 9, bound
         call_tool("set_variables", {"doc_name": doc_name, "variables": {"Thickness": 12}})
         assert abs(doc_obj.getObject(padded["feature_name"]).Length.Value - 12) < 1e-6, \
             "changing the variable must rebuild the feature"
+
+        # Both halves of what a smoke test hit: a name that only exists as a
+        # Label, and a name that exists nowhere.
+        feature = doc_obj.getObject(padded["feature_name"])
+        feature.Label = "TopPad"
+        assert _obj(doc_obj, "TopPad").Name == feature.Name, "a Label must resolve too"
+        try:
+            _obj(doc_obj, "Nonexistent")
+            raise AssertionError("a missing object must raise")
+        except ValueError as exc:
+            assert feature.Name in str(exc), f"the message must name what IS there: {exc}"
 
     finally:
         FreeCAD.closeDocument(doc_name)
@@ -557,37 +595,41 @@ def demo() -> None:
     "Drive an object's dimension from a VarSet expression, so changing the "
     "variable rebuilds the model. This is what makes a document parametric "
     "rather than merely built to the right size: bind_expression(obj_name='Pad', "
-    "property='Length', expression='Vars.Width'). On a sketch, `property` may be "
-    "the NAME of a dimensional constraint. Use the expression_paths create_varset "
-    "returned; do not assemble a path by hand.",
+    "property_name='Length', expression='Vars.Width'). On a sketch, property_name "
+    "may be the NAME of a dimensional constraint. Use the expression_paths "
+    "create_varset returned; do not assemble a path by hand.",
     {
         "type": "object",
         "properties": {
             "doc_name": _DOC,
             "obj_name": {"type": "string",
                          "description": "Object whose property is being driven, e.g. 'Pad'."},
-            "property": {"type": "string",
-                         "description": "Property or named constraint, e.g. 'Length', 'Radius'."},
+            "property_name": {"type": "string",
+                              "description": "Property or named constraint, e.g. 'Length', 'Radius'."},
             "expression": {"type": "string",
                            "description": "FreeCAD expression, e.g. 'Vars.Width' or 'Vars.Bore / 2'."},
         },
-        "required": ["doc_name", "obj_name", "property", "expression"],
+        "required": ["doc_name", "obj_name", "property_name", "expression"],
     },
 )
-def bind_expression(doc_name: str, obj_name: str, property: str, expression: str) -> dict:
+def bind_expression(doc_name: str, obj_name: str, property_name: str, expression: str) -> dict:
     # The helper has existed since the beginning, reachable only from inside
     # execute_code — while the system prompt asked for a PARAMETRIC document.
     # So the one operation that makes a document parametric was the one thing a
     # model had to write Python for, and a watched run spent 16 of 30 calls in
     # execute_code doing exactly that, failing 10 of them.
+    #
+    # The argument is property_name, not property: every other tool here names
+    # its string arguments doc_name/obj_name/sketch_name/body_name, so a caller
+    # reaching for the odd one out sent property_name and got rejected.
     doc = _doc(doc_name)
     obj = _obj(doc, obj_name)
-    value = _helpers()["bindExpression"](obj, property, expression)
+    value = _helpers()["bindExpression"](obj, property_name, expression)
     doc.recompute()
     # evalExpression can return a Base.Quantity, which xmlrpc can't marshal:
     # its __getattr__ proxy answers the marshaller's __dict__ probe with a
     # bound method instead of raising, and that trips the encoder.
     if hasattr(value, "Value"):
         value = value.Value
-    return {"object_name": obj.Name, "property": property,
+    return {"object_name": obj.Name, "property_name": property_name,
             "expression": expression, "value": value}

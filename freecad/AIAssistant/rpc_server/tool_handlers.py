@@ -32,7 +32,7 @@ from .fem_executor import run_fem_analysis as _fem_run
 from .object_factory import create_object_gui
 from .parts_library import get_parts_list as _lib_parts_list
 from .parts_library import insert_part_from_library as _lib_insert_part
-from .partdesign_handlers import _doc
+from .partdesign_handlers import _doc, _obj
 from .property_mapper import Object, set_object_property
 from .serialize import _safe, serialize_object
 from .tools import register
@@ -176,12 +176,7 @@ def save_document(doc_name: str, path: str = "") -> dict:
 def export_file(doc_name: str, path: str, object_names: list | None = None) -> dict:
     doc = _doc(doc_name)
     if object_names:
-        objs = []
-        for name in object_names:
-            obj = doc.getObject(name) or next((o for o in doc.Objects if o.Label == name), None)
-            if obj is None:
-                raise ValueError(f"Object '{name}' not found in '{doc_name}'.")
-            objs.append(obj)
+        objs = [_obj(doc, name) for name in object_names]
     else:
         objs = list(doc.Objects)
     if not objs:
@@ -454,13 +449,8 @@ def create_object(
     },
 )
 def edit_object(doc_name: str, obj_name: str, properties: dict) -> dict:
-    try:
-        doc = FreeCAD.getDocument(doc_name)
-    except Exception:
-        raise ValueError(f"Document '{doc_name}' not found.")
-    obj = doc.getObject(obj_name)
-    if not obj:
-        raise ValueError(f"Object '{obj_name}' not found in document '{doc_name}'.")
+    doc = _doc(doc_name)
+    obj = _obj(doc, obj_name)
     set_object_property(doc, obj, properties)  # raises on failure
     doc.recompute()
     FreeCAD.Console.PrintMessage(f"Object '{obj.Name}' updated via tool registry.\n")
@@ -1141,15 +1131,8 @@ def create_text_label(
     min_height: float = 1.8,
     mode: str = "engrave",
 ) -> dict:
-    try:
-        doc = FreeCAD.getDocument(doc_name)
-    except Exception:
-        raise ValueError(f"Document '{doc_name}' not found.")
-    body = doc.getObject(body_name)
-    if body is None:
-        raise ValueError(f"Object '{body_name}' not found in '{doc_name}'.")
-    if body.TypeId != "PartDesign::Body":
-        raise ValueError(f"'{body_name}' is a {body.TypeId}, not a PartDesign::Body.")
+    doc = _doc(doc_name)
+    body = _obj(doc, body_name, "PartDesign::Body")
     if mode not in ("engrave", "emboss"):
         raise ValueError("mode must be 'engrave' or 'emboss'")
 

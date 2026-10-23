@@ -300,17 +300,15 @@ def call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
             f"accepts: {', '.join(accepted) or 'no arguments'}"
         )
 
-    # These cross-fill between DIFFERENT things — a sketch's own name and the
-    # name of the body it sits on — so they run only after the required check.
-    # Before it they silently satisfied it: create_sketch(body_name='Ring') with
-    # no `name` produced a sketch called RingSketch instead of saying what was
-    # missing, and a `pad` missing both names filled them from one stray `name=`.
-    for a, b in (("name", "body_name"), ("name", "sketch_name"),
-                 ("name", "varset_name"), ("name", "obj_name")):
-        if a in args and b not in args and b in accepted:
-            args[b] = args[a]
-        elif b in args and a not in args and a in accepted:
-            args[a] = args[b]
+    # No cross-filling between `name` and body_name/sketch_name/obj_name. It
+    # used to happen here, and after the required check above it could only ever
+    # populate an OPTIONAL argument the caller deliberately left out - anything
+    # required is already present or has raised. What it actually did was rename
+    # things behind the caller's back: pad(body_name='Plate') with no `name`
+    # built a feature called PlatePad, so a smoke test that then asked for 'Pad'
+    # - FreeCAD's own default, and the only name it had reason to expect - got
+    # "not found". A caller that writes body_name where name belongs is served
+    # by _ARG_SYNONYMS, which runs before the required check and is meant for it.
 
     with transaction(name):
         return tool.handler(**args)
@@ -535,6 +533,22 @@ def demo() -> None:
             assert False, "expected ValueError for non-object schema"
         except ValueError:
             pass
+
+        # An optional `name` the caller left out stays left out. Filling it from
+        # body_name renamed features behind the caller's back (pad on body
+        # 'Plate' became 'PlatePad'), and could never satisfy a required
+        # argument anyway - the missing-argument check above has already run.
+        @register("named", "Optional name, required body.",
+                  {"type": "object",
+                   "properties": {"body_name": {"type": "string"},
+                                  "name": {"type": "string"}},
+                   "required": ["body_name"]})
+        def _named(body_name: str, name: str = "") -> dict:
+            return {"body_name": body_name, "name": name}
+
+        assert call_tool("named", {"body_name": "Plate"}) == {"body_name": "Plate", "name": ""}
+        # A synonym still resolves - that is _ARG_SYNONYMS' job, not cross-fill.
+        assert call_tool("named", {"body": "Plate"})["body_name"] == "Plate"
 
         # transaction() is a no-op without FreeCAD, and re-raises either way.
         with transaction("noop"):
