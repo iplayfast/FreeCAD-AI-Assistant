@@ -17,10 +17,13 @@ import base64
 import contextlib
 import difflib
 import io
+import json
 import os
 import re
+import sys
 import tempfile
 import threading
+import xml.etree.ElementTree as ET
 
 import FreeCAD
 
@@ -187,6 +190,23 @@ def export_file(doc_name: str, path: str, object_names: list | None = None) -> d
     return {"exported_to": path, "object_count": len(objs)}
 
 
+def _document_solids(doc) -> int:
+    """Solids across a document — the one claim a transcript cannot fake."""
+    # A PartDesign::Body's Shape mirrors its Tip feature's Shape, so counting
+    # both double-counts every body. Skip the Tip; the Body already covers it.
+    tips = {body.Tip.Name for body in doc.Objects
+            if body.TypeId == "PartDesign::Body" and body.Tip}
+    total = 0
+    for obj in doc.Objects:
+        if obj.Name in tips:
+            continue
+        try:
+            total += len(obj.Shape.Solids)
+        except Exception:
+            pass
+    return total
+
+
 @register(
     "undo",
     "Undo the last operation(s). Each tool call is one undo step, so this "
@@ -202,10 +222,29 @@ def export_file(doc_name: str, path: str, object_names: list | None = None) -> d
 )
 def undo(doc_name: str, steps: int = 1) -> dict:
     doc = _doc(doc_name)
+    before_objects, before_solids = len(doc.Objects), _document_solids(doc)
     for _ in range(max(1, int(steps))):
         doc.undo()
     doc.recompute()
-    return {"steps_undone": steps}
+    after_solids = _document_solids(doc)
+    result = {
+        "steps_undone": steps,
+        "objects": len(doc.Objects), "objects_before": before_objects,
+        "solids": after_solids, "solids_before": before_solids,
+    }
+    # Watched live: a run padded a bracket successfully, then asked to undo four
+    # steps to redo one sketch, and threw the finished solid away. The call
+    # answered {"steps_undone": 4} — true, and no help at all. Undo is a blunt
+    # instrument and the model has no other way to learn what it just cost.
+    if after_solids < before_solids:
+        result["warning"] = (
+            f"This undo destroyed {before_solids - after_solids} solid(s): the "
+            f"document had {before_solids} and now has {after_solids}. Undo reverts "
+            "whole tool calls, including features you meant to keep. To change one "
+            "thing, edit or delete that object instead — get_objects shows what is "
+            "there."
+        )
+    return result
 
 
 @register(
@@ -742,6 +781,209 @@ def insert_part_from_library(relative_path: str) -> dict:
     return {"message": f"Inserted '{relative_path}' from the parts library."}
 
 
+_PACKAGE_XML_NS = {"pm": "https://wiki.freecad.org/Package_Metadata"}
+_SCAN_CACHE_FILENAME = "freecad_ai_workbench_scan.json"
+
+
+def _scan_cache_path() -> str:
+    return os.path.join(FreeCAD.getUserAppDataDir(), _SCAN_CACHE_FILENAME)
+
+
+def _addon_metadata() -> list[dict]:
+    """name/description/path for every installed addon that ships a package.xml."""
+    addons = []
+    mod_dirs = set()
+    for getter in (FreeCAD.getUserAppDataDir, FreeCAD.getHomePath):
+        try:
+            mod_dirs.add(os.path.join(getter(), "Mod"))
+        except Exception:
+            pass
+    for mod_dir in mod_dirs:
+        if not os.path.isdir(mod_dir):
+            continue
+        for entry in sorted(os.listdir(mod_dir)):
+            addon_dir = os.path.join(mod_dir, entry)
+            pkg_path = os.path.join(addon_dir, "package.xml")
+            if not os.path.isfile(pkg_path):
+                continue  # no metadata: a built-in Mod, covered by the workbench sweep instead
+            try:
+                root = ET.parse(pkg_path).getroot()
+                name = (root.findtext("pm:name", namespaces=_PACKAGE_XML_NS) or entry).strip()
+                desc = (root.findtext("pm:description", namespaces=_PACKAGE_XML_NS) or "").strip()
+            except Exception:
+                name, desc = entry, ""
+            addons.append({"name": name, "description": desc, "path": addon_dir})
+    return addons
+
+
+_CRASHY_WORKBENCHES = {"FemWorkbench"}
+
+
+def _scan_workbenches_live() -> list[dict]:
+    """Walk every installed workbench and every command it contributes.
+
+    Most third-party addons (freecad.gears, Fasteners, ...) register no
+    commands until FreeCADGui.activateWorkbench runs their Initialize() —
+    without actually cycling through each one, a lazily-loaded addon is
+    invisible here even though it is installed. This is the only generic way
+    to force that registration without hand-parsing each addon's own layout.
+
+    A command is attributed to a workbench two ways, unioned: (1) it sits on
+    a toolbar that is not shared by every workbench (the File/Edit/View/...
+    chrome every workbench carries), found via getToolbarItems() right after
+    activating; (2) it is new in FreeCADGui.listCommands() since the previous
+    workbench was activated — catches a command that registers lazily but was
+    never put on a toolbar. Neither alone is enough: GearWorkBench's commands
+    are already registered before this scan starts (so (2) sees nothing new
+    for it), while a toolbar-less lazy command needs (2) to be seen at all.
+    """
+    addons = _addon_metadata()
+    try:
+        import FreeCADGui as Gui
+
+        original = Gui.activeWorkbench()
+    except Exception:
+        # Headless (freecadcmd) imports FreeCADGui fine and has no
+        # activeWorkbench/listWorkbenches at all, so importing was never the
+        # thing that could fail. Nothing to activate: report the addons on disk.
+        return [dict(a, internal="", kind="addon", commands=[]) for a in addons]
+
+    original_name = original.name() if original else None
+
+    toolbars_by_wb, module_path_by_wb, lazy_new_by_wb = {}, {}, {}
+    seen = set(Gui.listCommands())
+    for internal in sorted(Gui.listWorkbenches()):
+        if internal in _CRASHY_WORKBENCHES:
+            # ponytail: FemWorkbench's VTK post-processing pipeline segfaults
+            # on systems with a mismatched system vtk package - that's a
+            # native crash, unrecoverable with try/except. Skip outright
+            # instead of taking the whole scan down with it.
+            continue
+        try:
+            Gui.activateWorkbench(internal)
+            wb = Gui.activeWorkbench()
+            module = sys.modules.get(type(wb).__module__)
+            module_path_by_wb[internal] = os.path.dirname(getattr(module, "__file__", "") or "")
+            try:
+                toolbars_by_wb[internal] = wb.getToolbarItems()
+            except Exception:
+                toolbars_by_wb[internal] = {}
+            now = set(Gui.listCommands())
+            lazy_new_by_wb[internal] = now - seen
+            seen = now
+        except Exception:
+            # A workbench can fail anywhere in its Initialize() (e.g. a
+            # mismatched native dependency like VTK) - skip it like an
+            # outright activation failure, not abort the whole sweep.
+            continue
+    if original_name:
+        try:
+            Gui.activateWorkbench(original_name)
+        except Exception:
+            pass
+
+    # Skip workbenches with zero toolbars (NoneWorkbench, or one whose
+    # getToolbarItems() failed) - an empty set in this intersection wipes out
+    # every "shared" toolbar for everyone else, misattributing Std_*/PieMenu_*
+    # chrome to every workbench as if it were one of its own commands.
+    nonempty = [set(t) for t in toolbars_by_wb.values() if t]
+    shared_toolbars = set.intersection(*nonempty) if nonempty else set()
+
+    result = []
+    for internal, wb in sorted(Gui.listWorkbenches().items()):
+        own_toolbar_cmds = {
+            cmd for name, cmds in toolbars_by_wb.get(internal, {}).items()
+            if name not in shared_toolbars for cmd in cmds if cmd != "Separator"
+        }
+        commands = []
+        for cmd_name in sorted(own_toolbar_cmds | lazy_new_by_wb.get(internal, set())):
+            try:
+                info = Gui.Command.get(cmd_name).getInfo()
+                commands.append({
+                    "name": cmd_name,
+                    "menu": (info.get("menuText") or "").replace("&", ""),
+                    "tooltip": info.get("toolTip") or "",
+                })
+            except Exception:
+                commands.append({"name": cmd_name, "menu": "", "tooltip": ""})
+        module_path = module_path_by_wb.get(internal, "")
+        owner = next((a for a in addons if module_path.startswith(a["path"])), None)
+        result.append({
+            "name": getattr(wb, "MenuText", "") or internal,
+            "internal": internal,
+            "kind": "addon" if owner else "built-in",
+            "description": owner["description"] if owner else "",
+            "path": owner["path"] if owner else "",
+            "commands": commands,
+        })
+
+    covered = {w["path"] for w in result if w["path"]}
+    for addon in addons:
+        if addon["path"] not in covered:
+            # Installed, but registers no workbench of its own (a pie-menu or
+            # dialog-only addon) - still worth listing so it isn't invisible.
+            result.append(dict(addon, internal="", kind="addon", commands=[]))
+    return result
+
+
+@register(
+    "list_workbenches",
+    "List installed FreeCAD workbenches, built-in and third-party addons, each "
+    "with the commands it registers (name, menu text, tooltip) - e.g. which "
+    "library has a Bevel Gear command, without reading source. Result is "
+    "cached to disk after the first call; pass force=true to re-scan after "
+    "installing or updating an addon. Call this before hand-building "
+    "something in execute_code that a workbench like Gears, SheetMetal or "
+    "Fasteners may already do — reuse beats reimplementing.",
+    {"type": "object", "properties": {
+        "force": {"type": "boolean",
+                  "description": "Re-scan every workbench instead of using the cached result."},
+    }},
+)
+def list_workbenches(force: bool = False) -> list[dict]:
+    cache_path = _scan_cache_path()
+    if not force and os.path.isfile(cache_path):
+        try:
+            with open(cache_path) as f:
+                return json.load(f)
+        except Exception:
+            pass  # corrupt cache: fall through and rebuild it
+
+    result = _scan_workbenches_live()
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(result, f, indent=2)
+    except Exception as e:
+        FreeCAD.Console.PrintWarning(f"Failed to cache workbench scan: {e}\n")
+    return result
+
+
+def format_addon_summary(workbenches: list[dict]) -> str:
+    """Condense a ``list_workbenches`` result into addons worth mentioning upfront.
+
+    Built-ins are skipped - a model already knows Part/PartDesign/Sketcher from
+    training, so the only new information here is what third-party addons this
+    particular install has and what they can do. Skips addons with no commands
+    too (not yet activated, or dialog-only) - nothing useful to say about them.
+    """
+    addons = [w for w in workbenches if w.get("kind") == "addon" and w.get("commands")]
+    if not addons:
+        return ""
+    lines = [
+        "Installed addons (from the last workbench scan - rerun "
+        '"Rescan local workbenches" after installing or updating one):',
+    ]
+    for wb in sorted(addons, key=lambda w: w["name"]):
+        cmds = ", ".join(c["name"] for c in wb["commands"])
+        # The path, so driving it via execute_code/read_file never needs a
+        # filesystem search - a CLI without this addon's own list_workbenches
+        # tool (e.g. a different pre-registered "freecad" MCP server) has no
+        # other way to find where an addon lives.
+        where = f" ({wb['path']})" if wb.get("path") else ""
+        lines.append(f"- {wb['name']}{where}: {cmds}")
+    return "\n".join(lines)
+
+
 # View -------------------------------------------------------------------------
 
 @register(
@@ -986,6 +1228,32 @@ def demo() -> None:
     assert _link_targets((a, ["Edge1"])) == [("A", ["Edge1"])]  # LinkSub
     assert _link_targets((a, ("",))) == [("A", [])]             # LinkSub, whole object
     assert _link_targets([(a, ("Face3",)), (b, ("",))]) == [("A", ["Face3"]), ("B", [])]
+
+    # A forced scan rewrites the on-disk cache, and under freecadcmd it can
+    # only see addons on disk - no Gui means no commands. Leaving that behind
+    # would strip the GUI's own cached scan down to a command-less list and
+    # silently empty the addon summary the panel sends the model.
+    saved_cache = None
+    if os.path.isfile(_scan_cache_path()):
+        with open(_scan_cache_path()) as f:
+            saved_cache = f.read()
+    try:
+        wbs = list_workbenches(force=True)
+        assert isinstance(wbs, list) and wbs, "expected at least one workbench entry"
+        assert all({"name", "internal", "kind", "description", "path", "commands"} == set(w) for w in wbs)
+        addons = [w for w in wbs if w["kind"] == "addon"]
+        assert addons, "expected at least one addon with package.xml metadata (this addon has one)"
+        assert all(w["description"] for w in addons), "addon package.xml should yield a description"
+        assert all(os.path.isdir(w["path"]) for w in addons)
+        this_addon = next(w for w in wbs if w["path"] and os.path.basename(w["path"]) == "AI")
+        if any(w["commands"] for w in wbs):   # GUI only: headless registers no commands
+            assert any(c["name"] == "AILaunchAgentCommand" for c in this_addon["commands"]), this_addon
+        cached = list_workbenches()
+        assert cached == wbs, "an uncached call right after a forced scan should read back the cache"
+    finally:
+        if saved_cache is not None:
+            with open(_scan_cache_path(), "w") as f:
+                f.write(saved_cache)
 
     doc = FreeCAD.newDocument("_depgraph_demo")
     try:

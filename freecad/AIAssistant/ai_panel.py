@@ -28,7 +28,7 @@ from PySide.QtWidgets import (
 from PySide.QtCore import QEvent, QObject, Qt, QThread, Signal
 from PySide.QtGui import QPalette, QTextCursor
 
-from .rpc_server.agent import AgentSession, INCOMPLETE_STOPS, select_tools
+from .rpc_server.agent import AgentSession, DEFAULT_SYSTEM, INCOMPLETE_STOPS, select_tools
 from .rpc_server.gui_dispatch import dispatch_to_gui, ensure_gui_pump
 from .rpc_server.providers import ProviderError, make_provider, set_wire_logger
 from .rpc_server.settings import load_settings, save_settings
@@ -336,6 +336,17 @@ class AIChatPanel(QDockWidget):
         self._model_row = self._row(self._model, load_btn)
         form.addRow(self._model_label, self._model_row)
 
+        self._rescan_btn = QPushButton("Rescan local workbenches")
+        self._rescan_btn.setToolTip(
+            "Cycle every installed workbench once to find what commands it "
+            "offers (e.g. which addon has a Bevel Gear) and cache the result "
+            "to disk, so the agent does not have to read addon source to "
+            "find what is already installed. Runs automatically the first "
+            "time; press this again after installing or updating an addon."
+        )
+        self._rescan_btn.clicked.connect(self._on_rescan_workbenches)
+        form.addRow("", self._rescan_btn)
+
         self._save_btn = QPushButton("Save")
         self._save_btn.clicked.connect(self._on_save_settings)
         form.addRow("", self._save_btn)
@@ -365,7 +376,7 @@ class AIChatPanel(QDockWidget):
         self._model.setCurrentText(model)
         wanted = s.get("ai_tool_profile", "Everything")
         self._profile.setCurrentIndex(max(0, self._profile.findText(wanted)))
-        mode = s.get("ai_cli_permissions", "ask")
+        mode = s.get("ai_cli_permissions", "freecad")
         self._perms.setCurrentIndex(max(0, self._perms.findData(mode)))
         self._on_service_changed()
 
@@ -475,6 +486,34 @@ class AIChatPanel(QDockWidget):
             "ai_model": self._model.currentText().strip(),
             "ai_tool_profile": self._profile.currentText(),
         }
+
+    def _on_rescan_workbenches(self):
+        """Cycle every workbench once to find its commands, then cache the result.
+
+        Synchronous and on the GUI thread, not a worker thread: activating a
+        workbench touches toolbars and Coin3D state that only the GUI thread
+        may own. processEvents() flushes the "Scanning..." message first since
+        the sweep itself (tens of workbenches) then blocks for a few seconds.
+        """
+        from PySide.QtWidgets import QApplication
+
+        self._rescan_btn.setEnabled(False)
+        self._say_system("Scanning installed workbenches for their commands…")
+        QApplication.processEvents()
+        try:
+            workbenches = call_tool("list_workbenches", {"force": True})
+        except Exception as e:
+            self._say_system(f"Workbench scan failed: {e}")
+        else:
+            addons = sum(1 for w in workbenches if w["kind"] == "addon")
+            commands = sum(len(w["commands"]) for w in workbenches)
+            self._say_system(
+                f"Found {len(workbenches)} workbenches ({addons} addons), "
+                f"{commands} commands between them. Cached for next time — "
+                "press this again after installing or updating an addon."
+            )
+        finally:
+            self._rescan_btn.setEnabled(True)
 
     def _on_save_settings(self):
         cli = self._current_cli()
@@ -751,7 +790,14 @@ class AIChatPanel(QDockWidget):
                 )
 
         tools = describe_tools(chosen)
+        # Cached if a scan already ran; scans fresh (slow, one-time) otherwise -
+        # either way the model starts already knowing what's installed, instead
+        # of having to call list_workbenches itself before building.
+        from .rpc_server.tool_handlers import format_addon_summary
+        addon_summary = format_addon_summary(call_tool("list_workbenches", {}))
+        system = f"{DEFAULT_SYSTEM}\n\n{addon_summary}" if addon_summary else DEFAULT_SYSTEM
         self._session = AgentSession(provider, run_tool=self._run_tool, tools=tools,
+                                     system=system,
                                      max_steps=int(settings.get("ai_max_steps") or 25))
         head = f"Describing {len(tools)} of {len(describe_tools())} tools to the model ({chosen})"
         if window:

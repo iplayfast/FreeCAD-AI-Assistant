@@ -381,15 +381,15 @@ def pad(doc_name: str, body_name: str, sketch_name: str, length: float,
         "type": "object",
         "properties": {
             "doc_name": _DOC, "body_name": _BODY, "sketch_name": _SKETCH,
-            "length": {"type": "number", "description": "Depth, mm. Ignored if through_all."},
+            "length": {"type": "number", "description": "Depth, mm. Required unless through_all."},
             "name": {"type": "string"},
             "reversed": {"type": "boolean"},
             "through_all": {"type": "boolean"},
         },
-        "required": ["doc_name", "body_name", "sketch_name", "length"],
+        "required": ["doc_name", "body_name", "sketch_name"],
     },
 )
-def pocket(doc_name: str, body_name: str, sketch_name: str, length: float,
+def pocket(doc_name: str, body_name: str, sketch_name: str, length: float = 0.0,
            name: str = "", reversed: bool = True, through_all: bool = False) -> dict:
     doc = _doc(doc_name)
     body = _obj(doc, body_name, "PartDesign::Body")
@@ -493,6 +493,10 @@ def demo() -> None:
 
     doc_name = call_tool("create_document", {"name": "PartDesignDemo"})["document_name"]
     doc_obj = FreeCAD.getDocument(doc_name)
+    # The GUI turns this on for every document it opens; under freecadcmd it
+    # defaults to 0, which makes setActiveTransaction record nothing and every
+    # doc.undo() a silent no-op - so the undo check below would pass vacuously.
+    doc_obj.UndoMode = 1
     try:
         call_tool("create_body", {"doc_name": doc_name, "name": "Plate"})
         call_tool("create_sketch", {"doc_name": doc_name, "body_name": "Plate",
@@ -522,6 +526,16 @@ def demo() -> None:
         padded = call_tool("pad", {"doc_name": doc_name, "body_name": "Plate",
                                    "sketch_name": "ProfileSketch", "length": 5})
         assert not padded["failed"] and padded["solids"] >= 1, padded
+
+        # Undo must say what it cost. A watched run padded successfully, undid
+        # four steps to redo a sketch, and threw the finished solid away on a
+        # result that said only {"steps_undone": 4}.
+        undone = call_tool("undo", {"doc_name": doc_name, "steps": 1})
+        assert undone["solids_before"] == 1 and undone["solids"] == 0, undone
+        assert "destroyed 1 solid" in undone.get("warning", ""), undone
+        padded = call_tool("pad", {"doc_name": doc_name, "body_name": "Plate",
+                                   "sketch_name": "ProfileSketch", "length": 5})
+        assert padded["solids"] >= 1, padded
 
         # Parametric means the dimension is DRIVEN, not merely correct once.
         call_tool("create_varset", {"doc_name": doc_name, "variables": {"Thickness": 9}})
@@ -570,5 +584,10 @@ def bind_expression(doc_name: str, obj_name: str, property: str, expression: str
     obj = _obj(doc, obj_name)
     value = _helpers()["bindExpression"](obj, property, expression)
     doc.recompute()
+    # evalExpression can return a Base.Quantity, which xmlrpc can't marshal:
+    # its __getattr__ proxy answers the marshaller's __dict__ probe with a
+    # bound method instead of raising, and that trips the encoder.
+    if hasattr(value, "Value"):
+        value = value.Value
     return {"object_name": obj.Name, "property": property,
             "expression": expression, "value": value}

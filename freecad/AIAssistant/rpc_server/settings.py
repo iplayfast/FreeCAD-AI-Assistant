@@ -36,7 +36,7 @@ _DEFAULT_SETTINGS = {
     # console.CLI_PERMISSIONS. "ask" is every prompt as the CLI ships;
     # "freecad" pre-approves the modelling tools but not execute_code;
     # "skip" is --dangerously-skip-permissions, which is exactly what it says.
-    "ai_cli_permissions": "ask",
+    "ai_cli_permissions": "freecad",
 }
 
 

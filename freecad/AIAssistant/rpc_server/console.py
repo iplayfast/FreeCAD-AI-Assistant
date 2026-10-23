@@ -59,6 +59,15 @@ _PRESETS = {
         "cli": {"cmd": "codex", "name": "Codex CLI", "config": "~/.codex/config.toml",
                 "alts": ("codex-cli",)},
     },
+    "Pi (coding agent)": {
+        # pi-coding-agent speaks several providers itself (--provider, default
+        # "google"); mirroring Gemini's direct-API fields here is only the
+        # fallback for the rare case someone skips the CLI entirely.
+        "provider": "openai_compat",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "key_from": "aistudio.google.com/apikey",
+        "cli": {"cmd": "pi", "name": "Pi CLI", "config": "~/.pi/agent/mcp.json"},
+    },
     "Ollama (local)": {
         "provider": "openai_compat",
         "base_url": "http://localhost:11434/v1",
@@ -77,6 +86,14 @@ _DEFAULT_MODEL_CHOICE = "(provider default)"
 # line that tell whatever gets launched what it is connected to.
 _SHELL_CHOICE = "Shell command (external CLI)"
 _BRIEFING_NAME = "AGENT_BRIEFING.md"
+# CLIs that auto-load a project-instructions file from their cwd, keyed by
+# cli["cmd"]. That file gets the same content as the briefing, so instead of
+# this being "read AGENT_BRIEFING.md" and hoping it stays remembered across a
+# long session, it's part of the persistent system context from the start -
+# immune to being deprioritised or dropped the way an ordinary tool-call
+# result in conversation history can be. No entry (e.g. Pi CLI) means no known
+# convention - the briefing + opening prompt stays the only mechanism for it.
+_CONVENTION_FILES = {"claude": "CLAUDE.md", "codex": "AGENTS.md", "agy": "GEMINI.md"}
 # Absolute, because "this directory" is only true if the CLI actually starts in
 # the addon directory — and a CLI that resumes a previous session, or that a
 # terminal drops in $HOME, sees a name that matches nothing and asks "read
@@ -106,8 +123,8 @@ CLI_PERMISSIONS = {
     "skip": ["--dangerously-skip-permissions"],
 }
 _PERMISSION_LABELS = {
-    "ask": "Ask every time (default)",
-    "freecad": "Don't ask for FreeCAD tools (except execute_code)",
+    "ask": "Ask every time",
+    "freecad": "Don't ask for FreeCAD tools (except execute_code) (default)",
     "skip": "Don't ask for anything — dangerous",
 }
 
@@ -388,6 +405,14 @@ def write_briefing(cli: dict = None) -> str:
         tool_note = f"(could not list tools: {e})"
     else:
         tool_note = ""
+    try:
+        # Cached if a scan already ran; scans fresh (slow, one-time) otherwise -
+        # either way the launched CLI starts already knowing what's installed,
+        # instead of having to call list_workbenches itself before building.
+        from . import tool_handlers
+        addon_summary = tool_handlers.format_addon_summary(tool_handlers.list_workbenches())
+    except Exception:
+        addon_summary = ""
 
     lines = [
         "# FreeCAD AI Workbench — briefing for an external agent",
@@ -400,7 +425,15 @@ def write_briefing(cli: dict = None) -> str:
         "## Reaching FreeCAD",
         "",
         "Preferred: the `freecad` MCP server, if it is registered with you. Its",
-        "tools are the ones listed below and need no setup beyond that entry.",
+        "tools are the ones listed below and need no setup beyond that entry —",
+        "unless what's registered under that name is a *different* FreeCAD MCP",
+        "server than this addon's own (some other `freecad` entry from an earlier",
+        "setup). You can tell from the shape of its tools: if you have",
+        "`list_freecad_tools` / `call_freecad_tool` instead of (or alongside) the",
+        "names below, that's a generic dispatcher — call `list_freecad_tools`",
+        "first, before doing anything else, to see its live catalog. Either way,",
+        "prefer whatever typed tools you actually have over hand-rolling a solution",
+        "in `execute_code`/`execute_code_async` — they exist and work.",
         "",
     ]
     if cli and cli.get("config") and not _has_freecad_mcp(cli["config"]):
@@ -475,6 +508,10 @@ def write_briefing(cli: dict = None) -> str:
         # which otherwise defaults to writing Python and importing the result.
         DEFAULT_SYSTEM.replace("You are a FreeCAD embedded AI. You", "You"),
         "",
+    ]
+    if addon_summary:
+        lines += [addon_summary, ""]
+    lines += [
         "## Rules",
         "",
         "- Build with the tools above, not with Python. `execute_code` is the last",
@@ -489,12 +526,26 @@ def write_briefing(cli: dict = None) -> str:
         "  one large `execute_code` for that reason alone.",
         "- The user is watching the same model in the GUI. Say what you changed.",
         "- Ask before deleting or overwriting anything you did not create.",
+        "- Building a multi-point profile (tracing a photo, rebuilding a freehand",
+        "  sketch)? Call `sketch_polygon` once with the full point list — never",
+        "  `sketch_line`/one point per call. This CLI caps your response at",
+        "  CLAUDE_CODE_MAX_OUTPUT_TOKENS (default 8192) — N separate calls plus",
+        "  narration for each costs far more of that budget than one call with N",
+        "  points, and a crash mid-build leaves the document half-edited. Keep the",
+        "  narration between calls short for the same reason: the budget is",
+        "  shared with your prose, not separate from it.",
         "",
     ]
 
+    text = "\n".join(lines)
     path = os.path.join(_addon_dir(), _BRIEFING_NAME)
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write(text)
+
+    convention_name = _CONVENTION_FILES.get((cli or {}).get("cmd"))
+    if convention_name:
+        with open(os.path.join(_addon_dir(), convention_name), "w", encoding="utf-8") as f:
+            f.write(text)
     return path
 
 

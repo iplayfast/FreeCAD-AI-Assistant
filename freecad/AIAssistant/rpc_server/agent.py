@@ -34,7 +34,13 @@ DEFAULT_SYSTEM = (
     "  * create_sphere: create solid sphere features (e.g. for bearing balls at PitchDia/2, then polar_pattern around Z)\n"
     "  * create_cylinder: create solid cylinder features (e.g. for pins, rollers, shafts)\n"
     "When using execute_code, use the built-in global helpers (readyPart/create_body, createSketch, addCircle, createPad, createPocket, createSphere, createCylinder, createPolar, readyVars/create_varset, addVar). "
-    "Do NOT hand-write raw FreeCAD C++ property bindings or OpenCASCADE imports."
+    "Do NOT hand-write raw FreeCAD C++ property bindings or OpenCASCADE imports.\n"
+    "Before building something a specialised addon typically already supplies "
+    "(gears, fasteners/bolts, sheet metal, gridfinity bins, etc.), call "
+    "list_workbenches. If an installed addon covers it, use it (read its files "
+    "at the returned 'path' with read_file, then drive it with execute_code) "
+    "instead of hand-rolling the geometry. If more than one installed addon "
+    "could do it, tell the user the options and ask which to use."
 )
 
 

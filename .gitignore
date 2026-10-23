@@ -6,8 +6,13 @@ __pycache__/
 # and the provider layer in rpc_server/ uses stdlib urllib, so nothing needs it.
 vendor/
 
-# Regenerated on every external-CLI launch to match the running session.
+# Regenerated on every external-CLI launch to match the running session. The
+# per-CLI names are the same text under whatever filename that CLI auto-loads
+# from its cwd (see _CONVENTION_FILES in console.py).
 AGENT_BRIEFING.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md
 
 # Test documents the assistant left behind at the addon root.
 *.FCStd
@@ -25,5 +30,4 @@ test_bearing_exit
 dimensions.txt
 FreeCAD-Documentation-Project
 .gstack/
-suite_logs/
-suite_logs_baseline/
+suite_logs*/
