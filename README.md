@@ -36,12 +36,17 @@ launch, so it can never describe a FreeCAD other than the one running.
 
 ## Install
 
-Clone into your FreeCAD `Mod` directory as `AI-Assistant`, then restart FreeCAD:
+Clone into your FreeCAD `Mod` directory as `AIAssistant`, then restart FreeCAD:
 
 ```bash
 git clone https://github.com/iplayfast/FreeCAD-AI-Assistant.git \
-  ~/.local/share/FreeCAD/<version>/Mod/AI-Assistant
+  ~/.local/share/FreeCAD/<version>/Mod/AIAssistant
 ```
+
+`AIAssistant` matches the addon id in FreeCAD's index, so this is the same
+directory the Addon Manager installs to — clone it here and the two agree.
+Nothing in the addon depends on the name: every path is resolved from
+`__file__`, so a directory called something else works just as well.
 
 On Windows that is `%APPDATA%\FreeCAD\Mod`, on macOS
 `~/Library/Application Support/FreeCAD/Mod`.
