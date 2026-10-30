@@ -15,11 +15,15 @@ replacement: the addon's RPC server must already be running (it starts with
 'Launch Agent CLI' in FreeCAD, or on startup with auto_start_rpc) or every call
 reports that it isn't.
 
-Register it with an MCP-speaking CLI by pointing its config at this file:
+Register it with an MCP-speaking CLI by pointing its config at this file, and
+give it the access token the RPC server requires (the contents of
+``freecad_mcp_token`` in your FreeCAD user directory):
 
-    {"mcpServers": {"freecad": {"command": "python3", "args": ["<this file>"]}}}
+    {"mcpServers": {"freecad": {"command": "python3", "args": ["<this file>"],
+                                "env": {"FREECAD_RPC_TOKEN": "<token>"}}}}
 
-See ``README.md`` for the exact config location per CLI.
+See ``README.md`` for the exact config location per CLI. A CLI launched from the
+AI Assistant panel is handed both automatically.
 """
 
 import json
@@ -32,7 +36,13 @@ import xmlrpc.client
 # nothing here notices when the port is changed there, and the bridge just
 # talks to a closed socket. $FREECAD_RPC_URL is the escape hatch: whoever
 # changes the port sets it, and no CLI config has to be edited.
-RPC_URL = os.environ.get("FREECAD_RPC_URL") or "http://127.0.0.1:9875"
+#
+# The server authenticates every call by the token in the request path, so
+# $FREECAD_RPC_TOKEN becomes that path. It cannot be read from the token file
+# here: that lives under FreeCAD.getUserAppDataDir(), whose version segment
+# (…/FreeCAD/v26-3/) this FreeCAD-free process has no way to know.
+_RPC_BASE = (os.environ.get("FREECAD_RPC_URL") or "http://127.0.0.1:9875").rstrip("/")
+RPC_URL = _RPC_BASE + "/" + os.environ.get("FREECAD_RPC_TOKEN", "").strip("/")
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "freecad", "version": "1.0.0"}
@@ -43,8 +53,18 @@ def _rpc() -> xmlrpc.client.ServerProxy:
 
 
 def _unreachable(e: Exception) -> str:
+    # _RPC_BASE, not RPC_URL: the path is the access token, and this string goes
+    # into an agent transcript the user may well paste somewhere.
+    if getattr(e, "errcode", None) == 403:
+        return (
+            f"the FreeCAD RPC server at {_RPC_BASE} rejected this call: no valid "
+            "access token. Set FREECAD_RPC_TOKEN in this MCP server's config env "
+            "to the contents of freecad_mcp_token in the FreeCAD user directory "
+            "(FreeCAD: Python console -> FreeCAD.getUserAppDataDir()), or relaunch "
+            "from the AI Assistant panel, which passes it for you."
+        )
     return (
-        f"cannot reach the FreeCAD RPC server at {RPC_URL}: {e}. Start it from "
+        f"cannot reach the FreeCAD RPC server at {_RPC_BASE}: {e}. Start it from "
         "AI Assistant toolbar in FreeCAD ('Launch Agent CLI' starts it), or "
         "enable auto-start."
     )
@@ -221,6 +241,15 @@ def demo() -> None:
     try:
         down = _handle({"jsonrpc": "2.0", "id": 5, "method": "tools/list"})
         assert "cannot reach the FreeCAD RPC server" in down["error"]["message"]
+
+        # A 403 is the server saying "wrong token", not "not running" — and
+        # neither message may quote RPC_URL, whose path IS the token.
+        def _forbid():
+            raise xmlrpc.client.ProtocolError(_RPC_BASE, 403, "Forbidden", {})
+        _rpc = lambda: types.SimpleNamespace(describe_tools=_forbid)
+        denied = _handle({"jsonrpc": "2.0", "id": 5, "method": "tools/list"})["error"]
+        assert "FREECAD_RPC_TOKEN" in denied["message"], denied
+        assert RPC_URL not in denied["message"], "must not quote the token path"
     finally:
         _rpc = real_rpc
 

@@ -39,8 +39,15 @@ __all__ = [
 
 def make_provider(config: dict):
     """Build a provider from settings: {provider, model, base_url, api_key, timeout}."""
-    kind = config.get("provider", "anthropic")
+    kind = config.get("provider") or ""
     timeout = float(config.get("timeout") or DEFAULT_TIMEOUT)
+    if not kind:
+        # Deliberately not defaulted to a cloud provider: see
+        # settings._DEFAULT_SETTINGS. Nothing is sent anywhere until the user
+        # has picked a service and been told what reaching it means.
+        raise ProviderError(
+            "no AI service is configured yet, so nothing has been sent anywhere."
+        )
     if kind == "anthropic":
         key = config.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
         return AnthropicProvider(

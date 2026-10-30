@@ -2,6 +2,7 @@
 import FreeCAD
 
 import threading
+from hmac import compare_digest
 from typing import Any
 from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 
@@ -245,15 +246,25 @@ class FreeCADRPC:
 
 
 class _LocalOnlyHandler(SimpleXMLRPCRequestHandler):
-    """Refuse anything a web page could have sent.
+    """Authenticate the caller, and refuse anything a web page could have sent.
 
-    Loopback is not the boundary it looks like. A page you visit in any browser
-    can POST cross-origin to 127.0.0.1 without a CORS preflight, as long as it
-    uses a "simple" content type — it cannot read the reply, but by then
-    execute_code has already run arbitrary Python inside FreeCAD. Verified: a
-    text/plain POST carrying an XML-RPC body reaches the handler untouched.
+    Loopback is not the boundary it looks like, in two ways.
 
-    Two headers close it, and no credential has to be invented:
+    Every local account and every process on the machine can connect to a
+    loopback port, and this one runs arbitrary Python inside the user's FreeCAD.
+    So a caller must present the token from ``settings.rpc_token()`` as the
+    request path — ``http://127.0.0.1:9875/<token>`` — which ``ServerProxy``
+    accepts as part of the URL, so no caller needs a custom Transport. The token
+    file is readable only by the user who owns the FreeCAD profile, so another
+    account cannot obtain it; a process running *as that user* already has every
+    power this port grants, so it is inside the boundary either way.
+
+    And a page you visit in any browser can POST cross-origin to 127.0.0.1
+    without a CORS preflight, as long as it uses a "simple" content type — it
+    cannot read the reply, but by then execute_code has already run. (Verified:
+    a text/plain POST carrying an XML-RPC body reaches the handler untouched.)
+    The token alone stops that, but these two header checks cost nothing and
+    hold even if a token ever leaks into a page:
 
       * a cross-origin fetch always carries Origin, and a real XML-RPC client
         never does;
@@ -261,18 +272,36 @@ class _LocalOnlyHandler(SimpleXMLRPCRequestHandler):
         preflight, which this server does not answer.
     """
 
+    # The path carries the token, so it is not one of SimpleXMLRPCRequestHandler's
+    # two fixed strings. Empty means "accept any path" — do_POST checks it.
+    rpc_paths = ()
+
+    def _refuse(self, why: str):
+        FreeCAD.Console.PrintWarning(f"MCP RPC: refused a request — {why}\n")
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         origin = self.headers.get("Origin")
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if origin or content_type not in ("text/xml", "application/xml"):
-            FreeCAD.Console.PrintWarning(
-                f"MCP RPC: refused a request that looks browser-driven "
-                f"(Origin={origin!r}, Content-Type={content_type!r})\n"
+            return self._refuse(
+                f"looks browser-driven (Origin={origin!r}, "
+                f"Content-Type={content_type!r})"
             )
-            self.send_response(403)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+        # Read per request rather than cached: deleting the token file rotates
+        # the credential without restarting FreeCAD, and reading a 33-byte file
+        # is nothing beside the round trip that carried the request here.
+        from .settings import rpc_token
+
+        if not compare_digest(self.path.strip("/"), rpc_token()):
+            return self._refuse(
+                "no valid access token in the URL path. Agent CLIs launched "
+                "from the AI Assistant panel get it automatically; a hand-"
+                "written MCP config needs FREECAD_RPC_TOKEN set to the "
+                "contents of freecad_mcp_token in your FreeCAD user directory"
+            )
         return super().do_POST()
 
 
@@ -302,7 +331,11 @@ def start_rpc_server(port=RPC_PORT):
 
     ensure_gui_pump()
 
-    return f"RPC Server started at {host}:{port}."
+    # The token itself is not printed: the Report view is the first thing a user
+    # pastes into a bug report. Callers launched from the panel are handed it in
+    # their briefing and environment.
+    return (f"RPC Server started at {host}:{port}, access token required "
+            f"(see freecad_mcp_token in {FreeCAD.getUserAppDataDir()}).")
 
 
 def stop_rpc_server():
@@ -322,7 +355,7 @@ def stop_rpc_server():
 
 
 def demo() -> None:
-    """Self-check of the wire guard: browser-shaped requests must not get in.
+    """Self-check of the wire guard: no token and no browser-shaped request gets in.
 
     Runs a throwaway server on an ephemeral port, so it never disturbs a real
     one. Run: ``freecadcmd run_checks.py``.
@@ -331,18 +364,23 @@ def demo() -> None:
     import urllib.request
     import xmlrpc.client
 
+    from .settings import rpc_token
+
     server = SimpleXMLRPCServer(("127.0.0.1", 0), requestHandler=_LocalOnlyHandler,
                                 allow_none=True, logRequests=False)
     server.register_function(lambda: "RAN", "ping")
     port = server.server_address[1]
+    token = rpc_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         call = (b"<?xml version='1.0'?><methodCall><methodName>ping</methodName>"
                 b"<params></params></methodCall>")
 
-        def post(headers) -> int:
+        def post(headers, path=None) -> int:
+            path = token if path is None else path
             request = urllib.request.Request(
-                f"http://127.0.0.1:{port}/", data=call, method="POST", headers=headers)
+                f"http://127.0.0.1:{port}/{path}", data=call, method="POST",
+                headers=headers)
             try:
                 return urllib.request.urlopen(request, timeout=5).status
             except urllib.error.HTTPError as e:
@@ -353,9 +391,14 @@ def demo() -> None:
         assert post({"Content-Type": "text/plain;charset=UTF-8"}) == 403
         # Origin is present on every cross-origin fetch and on no real client.
         assert post({"Content-Type": "text/xml", "Origin": "https://evil.example"}) == 403
+        # Another program on this machine, correctly shaped but with no token
+        # (or a guessed one): this is what the token is for.
+        assert post({"Content-Type": "text/xml"}, path="") == 403
+        assert post({"Content-Type": "text/xml"}, path="not-the-token") == 403
         # ...and a genuine client still works, which is the whole constraint.
         assert post({"Content-Type": "text/xml"}) == 200
-        proxy = xmlrpc.client.ServerProxy(f"http://127.0.0.1:{port}", allow_none=True)
+        proxy = xmlrpc.client.ServerProxy(f"http://127.0.0.1:{port}/{token}",
+                                          allow_none=True)
         assert proxy.ping() == "RAN"
     finally:
         server.shutdown()

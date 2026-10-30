@@ -12,12 +12,55 @@ different sets of tools.
 No third-party Python packages. The provider layer is stdlib `urllib`; the only
 imports outside the standard library are FreeCAD's own modules and PySide.
 
+## Where your design data goes
+
+An AI assistant is only useful if it can see the model, so this one sends the
+model to whichever service you point it at. Read this before you pick one.
+
+**No cloud service is configured out of the box.** A fresh install has no
+provider set, and nothing is sent anywhere until you choose one — not even if
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` happens to be set in your environment.
+
+**What the panel does pick for you is local, or nothing.** On opening it scans
+this machine and selects the best thing actually running: a live Ollama first,
+then any other local server it found, then an agent CLI that is installed. A
+local server with a model loaded is also saved, so the panel works on the first
+Send — it cannot leak anything, which is why that one case is automatic. A cloud
+provider is never selected or saved for you. If nothing at all is installed, the
+panel says so and names the ways forward instead of offering a service that is
+not there.
+
+**Choose a local service and nothing leaves the machine.** Ollama or any other
+OpenAI-compatible server on `localhost` keeps every byte on your computer. This
+is the configuration to use for work you cannot send out.
+
+**Choose a cloud service and your design data is sent to it.** Your prompts, and
+whatever the tools return in the course of answering them: document and object
+names, dimensions, sketch coordinates, placements, measurement results, the
+contents of any file you point the assistant at with `read_file`, and screenshots
+of the 3D view if the assistant takes one. That is the whole point of the tool
+loop, and there is no way to have the assistant reason about your model without
+it. The addon says this in a dialog and asks you to confirm before it saves a
+cloud provider for the first time.
+
+**An agent CLI is its own service.** Claude Code, Codex and Antigravity run under
+their own accounts and their own privacy terms; this addon only hands them a port
+and a briefing. What they send, and where, is between you and them.
+
+API keys you paste into the panel are stored in your OS keyring if this FreeCAD's
+Python has the `keyring` module, and otherwise in `freecad_mcp_key` in your
+FreeCAD user directory, created mode 0600 — see
+[Credentials and the RPC port](#credentials-and-the-rpc-port). They are never
+written to the settings file. Leave the key box blank to use `$ANTHROPIC_API_KEY`
+/ `$OPENAI_API_KEY` instead and have the addon store nothing at all.
+
 ## Two ways to run a model
 
 The AI Service dropdown is one decision: who is doing the thinking.
 
-**Local and self-hosted servers** answer inside the panel. Ollama is preconfigured;
-anything else OpenAI-compatible works via *Other*, or is found for you — press
+**Local and self-hosted servers** answer inside the panel, and send nothing off
+your machine. A running Ollama is picked by default; anything else
+OpenAI-compatible works via *Other*, or is found for you — press
 **Search for installed AI's** and the addon asks every loopback listener whether
 it serves `/v1/models`. That is not the same as probing well-known ports: Unsloth's
 llama.cpp child takes an ephemeral port that changes whenever you load a
@@ -96,14 +139,16 @@ the two freely.
 ## Settings
 
 Stored in `freecad_mcp_settings.json` under FreeCAD's user app data directory,
-**not** in this repository:
+**not** in this repository. The API key is not among them — it lives in the OS
+keyring or in its own 0600 file, see
+[Credentials and the RPC port](#credentials-and-the-rpc-port):
 
 | Key | Meaning |
 |---|---|
-| `ai_provider` | `anthropic` or `openai_compat` |
+| `ai_provider` | `anthropic` or `openai_compat`; **empty on a fresh install**, which is what keeps an unconfigured addon from talking to anything |
 | `ai_base_url` | for `openai_compat`, e.g. `http://localhost:11434/v1` |
 | `ai_model` | empty means the provider's default |
-| `ai_api_key` | falls back to `$ANTHROPIC_API_KEY` / `$OPENAI_API_KEY` |
+| `ai_remote_ack` | set once you have confirmed the data-egress notice for a cloud service |
 | `ai_timeout` | seconds to wait for one completion (default 600) |
 | `ai_tool_profile` | which slice of the registry to advertise; see Tool profiles |
 | `auto_start_rpc` | start the RPC server when FreeCAD loads |
@@ -186,13 +231,19 @@ name, and the MCP face is unaffected.
 
 ## MCP / XML-RPC
 
-An XML-RPC server on `127.0.0.1:9875`, started from the toolbar or automatically
-via `auto_start_rpc`. `call_tool(name, arguments)` reaches the whole registry;
-`describe_tools()` enumerates it.
+An XML-RPC server on `127.0.0.1:9875`, off until you start it from the toolbar or
+switch on `auto_start_rpc`. `call_tool(name, arguments)` reaches the whole
+registry; `describe_tools()` enumerates it.
+
+Every call must carry the access token as the request path, which for
+`xmlrpc.client` means putting it in the URL. The token is the contents of
+`freecad_mcp_token` in your FreeCAD user directory (`FreeCAD.getUserAppDataDir()`
+in the Python console), created the first time the server starts:
 
 ```python
 import xmlrpc.client
-fc = xmlrpc.client.ServerProxy("http://127.0.0.1:9875", allow_none=True)
+TOKEN = open("<FreeCAD user dir>/freecad_mcp_token").read().strip()
+fc = xmlrpc.client.ServerProxy(f"http://127.0.0.1:9875/{TOKEN}", allow_none=True)
 fc.ping()
 fc.call_tool("create_document", {"name": "Demo"})
 fc.call_tool("create_object", {"doc_name": "Demo", "obj_type": "Part::Box",
@@ -208,10 +259,12 @@ XML-RPC Python. It needs no FreeCAD import and no third-party package — plain
 stdlib `xmlrpc.client`, spawned with the system's own `python3` — but the RPC
 server above still has to be running to answer it.
 
-Register it in the CLI's MCP config:
+Register it in the CLI's MCP config, with the access token in its environment:
 
 ```json
-{"mcpServers": {"freecad": {"command": "python3", "args": ["<addon dir>/freecad/AIAssistant/rpc_server/mcp_stdio.py"]}}}
+{"mcpServers": {"freecad": {"command": "python3",
+                            "args": ["<addon dir>/freecad/AIAssistant/rpc_server/mcp_stdio.py"],
+                            "env": {"FREECAD_RPC_TOKEN": "<token>"}}}}
 ```
 
 or, for a TOML config (Codex CLI):
@@ -220,19 +273,62 @@ or, for a TOML config (Codex CLI):
 [mcp_servers.freecad]
 command = "python3"
 args = ["<addon dir>/freecad/AIAssistant/rpc_server/mcp_stdio.py"]
+env = { FREECAD_RPC_TOKEN = "<token>" }
 ```
 
-A CLI launched without this pre-registered gets the exact snippet, filled in
-with its own config path, at the top of `AGENT_BRIEFING.md`.
+The bridge cannot read the token file itself — it runs as a plain `python3`
+subprocess with no FreeCAD, so it has no way to know which versioned user
+directory the file is in. A CLI launched from the panel inherits
+`FREECAD_RPC_TOKEN` and needs none of this; one launched by hand gets the exact
+snippet, filled in with its own config path and the live token, at the top of
+`AGENT_BRIEFING.md`.
 
 ### Security
 
-The server is bound to loopback and must stay there: `execute_code` runs
-arbitrary Python inside your live FreeCAD, with no sandbox and no confirmation
-step. Do not expose port 9875 to a network.
+`execute_code` runs arbitrary Python inside your live FreeCAD, with no sandbox
+and no confirmation step. Anything that can call this server can do anything to
+your machine, so:
+
+- **The server is off by default.** It starts when you launch an agent CLI, or
+  if you switch on auto-start. Switched off, the module that opens the port is
+  never even imported.
+- **Loopback only, and it must stay there.** Do not expose port 9875 to a
+  network, and do not put it behind a reverse proxy.
+- **Every call is authenticated.** Loopback is not a boundary by itself: every
+  account and every process on the machine can connect to it. A caller must
+  present the token from `freecad_mcp_token`, created mode 0600, which no other
+  account can read. Delete the file to rotate the token — the next start makes
+  a new one, and any MCP config holding the old one has to be updated (the
+  briefing notices this and prints the fix).
+- **Browser-shaped requests are refused outright**, whatever token they carry.
+  A page you visit can POST cross-origin to loopback with a "simple" content
+  type and no CORS preflight; such a request cannot read the reply, but by then
+  `execute_code` would already have run. Requests carrying an `Origin` header,
+  or any content type other than `text/xml`, get a 403.
+- **A process running as you is inside the boundary.** It can read the token
+  file, just as it can read your SSH keys. The token stops other accounts and
+  stray local programs, not a compromise of your own account.
 
 Every `call_tool` is wrapped in one undo step, so anything an agent does can be
 backed out one action at a time.
+
+### Credentials and the RPC port
+
+Three files, all in your FreeCAD user directory
+(`FreeCAD.getUserAppDataDir()`):
+
+| File | What | Protection |
+|---|---|---|
+| `freecad_mcp_settings.json` | provider, model, profiles, toggles | none needed — no secrets in it |
+| `freecad_mcp_key` | provider API key, if not in the OS keyring | mode 0600, and absent entirely when the keyring is used or the key comes from the environment |
+| `freecad_mcp_token` | XML-RPC access token | mode 0600 |
+
+`keyring` is not a dependency and FreeCAD does not bundle it; where it is
+importable (a distro build against the system Python, or `pip install keyring`)
+the API key goes to the OS credential store instead of to a file. On Windows the
+0600 modes are no-ops, and the protection is the location: these files live under
+your own `%APPDATA%`, which Windows ACLs to your account. On POSIX
+`~/.local/share` is usually world-readable, which is exactly why the mode is set.
 
 ## Development
 

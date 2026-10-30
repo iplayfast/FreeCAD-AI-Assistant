@@ -41,8 +41,10 @@ from .rpc_server.console import (
     _PERMISSION_LABELS,
     _PRESETS,
     _fetch_models,
+    confirm_remote_provider,
     discover_local_servers,
     external_clis,
+    is_local_endpoint,
     launch_agent_cli,
     scan_clis,
 )
@@ -213,7 +215,8 @@ class AIChatPanel(QDockWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        layout.addWidget(self._build_settings_box())
+        self._settings_box = self._build_settings_box()
+        layout.addWidget(self._settings_box)
 
         self._chat = QTextBrowser()
         self._chat.setOpenExternalLinks(False)
@@ -322,6 +325,13 @@ class AIChatPanel(QDockWidget):
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.Password)
         self._key.setPlaceholderText("blank = use $ANTHROPIC_API_KEY / $OPENAI_API_KEY")
+        self._key.setToolTip(
+            "Stored in your operating system's keyring if this FreeCAD has the "
+            "'keyring' module, otherwise in a file readable only by you "
+            "(freecad_mcp_key in the FreeCAD user directory). Never in the "
+            "settings file. Leave it blank to use the environment variable "
+            "instead and store nothing at all."
+        )
         form.addRow(self._key_label, self._key)
 
         self._model = QComboBox()
@@ -552,13 +562,21 @@ class AIChatPanel(QDockWidget):
         if cli is not None:
             self._launch_external(cli)
             return
+        name = self._service.currentText()
         settings = load_settings()
         settings.update(self._settings_from_form())
+        # "Other (OpenAI-compatible)" can be any URL, so the local-only dropdown
+        # is not itself a guarantee. Disclose before the first off-machine save.
+        if not confirm_remote_provider(name, settings):
+            self._say_system(f"Not saved — nothing has been sent to {name}.")
+            return
         save_settings(settings)
         # The provider is built from settings, so a change must start a new
         # session rather than continue one bound to the old endpoint.
         self._session = None
-        self._say_system("Settings saved.")
+        where = "stays on this computer" if is_local_endpoint(
+            settings["ai_provider"], settings["ai_base_url"]) else f"is sent to {name}"
+        self._say_system(f"Settings saved. Your model data {where}.")
 
     def _on_verbose_toggled(self, checked: bool):
         """Install or clear the provider wire tap.
@@ -588,8 +606,40 @@ class AIChatPanel(QDockWidget):
             f'<pre style="white-space:pre-wrap; font-size:small">{self._esc(text)}</pre>'
         )
 
+    def _set_settings_enabled(self, on: bool) -> None:
+        """Enable or disable the whole Settings box bar the Search button.
+
+        Everything in that box describes services that may or may not exist on
+        this machine *right now*: a saved base URL is last session's port (an
+        Unsloth llama.cpp child takes a new one every load), and a saved service
+        may not be running at all. The form is therefore dead until the scan
+        that establishes what is live has run in this session — which leaves
+        exactly one thing to press, and it is the right one.
+
+        Qt disables a whole subtree, so the Search button's ancestors have to be
+        spared too; walking up from it is one line and survives a relayout,
+        where a hand-kept list of the other 18 widgets would not.
+        """
+        spared, widget = set(), self._detect_btn
+        while widget is not None and widget is not self._settings_box:
+            spared.add(widget)
+            widget = widget.parentWidget()
+        for child in self._settings_box.findChildren(QWidget):
+            if child not in spared:
+                child.setEnabled(on)
+        self._service.setEnabled(on)   # shares a holder with the Search button
+
     def _on_detect(self):
+        # Locked for the duration, not just at startup: a rescan rebuilds the
+        # dropdown, and the entries being replaced are not ones to act on.
+        self._set_settings_enabled(False)
         self._detect_btn.setEnabled(False)
+        # A form that greys itself out needs to say why, or it reads as a bug.
+        self._say_system(
+            "Checking which model servers are listening on this machine — "
+            "Settings unlocks when that answer is in, so what it offers is "
+            "this session's, not last session's."
+        )
         self._scanner = _ServerScanner()
         self._scanner.found.connect(self._on_servers_found)
         self._scanner.start()
@@ -602,12 +652,37 @@ class AIChatPanel(QDockWidget):
         "configured". Their model list comes from the probe, so Load needs no
         network call for them.
         """
+        self._set_settings_enabled(True)
         self._detect_btn.setEnabled(True)
         known = {_same_endpoint(p.get("base_url")) for p in self._services.values()}
         added = []
+        # (needs_key, label) for every dropdown entry backed by a server that
+        # answered just now — the candidates for the default selection below.
+        live = []
         for server in servers:
-            if _same_endpoint(server["base_url"]) in known:
-                continue                  # already offered, e.g. Ollama's preset
+            endpoint = _same_endpoint(server["base_url"])
+            if endpoint in known:
+                # Already offered, e.g. Ollama's preset: no new row, but it is a
+                # live one, so it is still a candidate — and the probe knows
+                # things the hand-written preset does not. Fold those in, or
+                # Ollama alone never gets a model list or a window size, and the
+                # request-too-big check that every discovered server gets would
+                # skip the one endpoint most people are using. A copy, because
+                # these dicts are _PRESETS' own and the console's wizard reads
+                # them too.
+                offered = next(
+                    (n for n, p in self._services.items()
+                     if _same_endpoint(p.get("base_url")) == endpoint), None)
+                if offered:
+                    merged = dict(self._services[offered])
+                    merged.update({
+                        "models": server["models"] or merged.get("models") or [],
+                        "n_ctx": server.get("n_ctx") or merged.get("n_ctx"),
+                        "slots": server.get("slots") or merged.get("slots"),
+                    })
+                    self._services[offered] = merged
+                    live.append((bool(server.get("needs_key")), offered))
+                continue
             needs_key = server.get("needs_key")
             label = f"{server['name'] or 'local server'} :{server['port']}"
             if needs_key:
@@ -631,6 +706,7 @@ class AIChatPanel(QDockWidget):
                 "slots": server.get("slots"),
             }
             self._service.insertItem(index, label)
+            live.append((bool(needs_key), label))
             if needs_key:
                 added.append(f"{label} — needs an API key, then press Load")
             else:
@@ -649,6 +725,103 @@ class AIChatPanel(QDockWidget):
         # Only now can a saved server that exists solely on a scanned port be
         # matched to a dropdown entry.
         self._select_saved_service()
+        self._apply_default_service(live)
+
+    def _apply_default_service(self, live: list) -> None:
+        """Pick a service for a session that has none saved.
+
+        Preference order, best first, because each step down asks more of the
+        user: a running Ollama (no credential, nothing leaves the machine, and
+        it is what most people have), then any other local server the scan
+        found, then an agent CLI that is actually installed. A local pick is
+        also saved, so the panel works on the first Send instead of refusing
+        with "no service configured" while displaying one — it cannot leak
+        anything, which is exactly why it is the one case worth auto-saving.
+
+        Does nothing once a service is saved: the user's choice is not ours to
+        second-guess on every rescan.
+        """
+        if load_settings().get("ai_provider"):
+            return
+
+        # Ollama first, then servers needing no key, each group in discovery
+        # order (sorted is stable). Matched by URL, not by the dropdown label,
+        # so renaming the preset cannot quietly change the preference — and an
+        # Ollama preset that disappeared entirely degrades to "first keyless
+        # server" rather than raising.
+        ollama = _same_endpoint((_PRESETS.get("Ollama (local)") or {}).get("base_url"))
+        ranked = sorted(live, key=lambda e: (
+            _same_endpoint(self._services[e[1]].get("base_url")) != ollama, e[0]))
+        clis = [n for n, c in self._cli_choices.items() if c.get("cmd")]
+
+        if ranked:
+            label = ranked[0][1]
+            self._select_service(label)
+            preset = self._services[label]
+            if not is_local_endpoint(preset["provider"], preset["base_url"]):
+                return      # unreachable today; the guard is what keeps it so
+            if preset.get("needs_key"):
+                # It answered 401. Selected, because it is the only thing
+                # running, but there is nothing to save until it has a key.
+                self._say_system(
+                    f"{label} is the only model server listening, and it wants "
+                    "an API key. Paste one above, press Load to check it, then "
+                    "press Save."
+                )
+                return
+            if not self._model.currentText().strip():
+                # Running, but serving nothing — an OpenAI-compatible request
+                # needs a model named, so saving this would only fail later.
+                self._say_system(
+                    f"{label} is listening but has no model loaded, so it is "
+                    "selected but not saved. Load a model there (or press Load "
+                    "to list what it has), then press Save."
+                )
+                return
+            settings = load_settings()
+            settings.update(self._settings_from_form())
+            save_settings(settings)
+            self._session = None
+            self._say_system(
+                f"No AI service was configured, so {label} is selected and saved "
+                f"with model {self._model.currentText()} — it runs on this "
+                "computer, so nothing you build leaves it. Change it any time in "
+                "Settings."
+            )
+        elif clis:
+            self._select_service(clis[0])
+            self._say_system(
+                f"No local model server is listening, so {clis[0]} is selected: "
+                "it runs in its own terminal on its own account. Press Launch AI "
+                "Service to start it, or install a local server (e.g. Ollama) and "
+                "press Search for installed AI's to keep everything on this "
+                "machine."
+            )
+        else:
+            self._say_system(
+                "Nothing to run a model with was found here: no local server is "
+                "listening, and no agent CLI is on PATH. The service shown in the "
+                "dropdown is a starting point, not something that is running. "
+                "Three ways on: install a local server such as Ollama and press "
+                "Search for installed AI's; install an agent CLI (Claude Code, "
+                "Codex, Antigravity) and reopen this panel; or pick 'Other "
+                "(OpenAI-compatible)' and give the Base URL of a server you run "
+                "elsewhere."
+            )
+
+    def _select_service(self, label: str) -> None:
+        """Select a dropdown entry as though the user had picked it.
+
+        Signals are left connected on purpose — the model list and the row
+        visibility belong to the service, and _on_service_picked is what sets
+        them. Called explicitly as well, because Qt emits nothing when the
+        wanted index is already current (the usual case for Ollama at index 0).
+        """
+        index = self._service.findText(label)
+        if index < 0:
+            return
+        self._service.setCurrentIndex(index)
+        self._on_service_picked()
 
     def _report_cli_scan(self):
         """Show the PATH scan behind the external-CLI rows in the dropdown.
@@ -785,7 +958,8 @@ class AIChatPanel(QDockWidget):
             return self._session
         settings = load_settings()
         provider = make_provider({
-            "provider": settings.get("ai_provider", "anthropic"),
+            # No default service: see settings._DEFAULT_SETTINGS.
+            "provider": settings.get("ai_provider", ""),
             "model": settings.get("ai_model") or None,
             "base_url": settings.get("ai_base_url", ""),
             "api_key": settings.get("ai_api_key", ""),

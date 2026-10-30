@@ -27,6 +27,7 @@ CWD = os.path.abspath(os.getcwd())
 # Every module with a demo(). Registry and handlers first: a break there fails
 # everything after it, and seeing that first is the useful ordering.
 MODULES = (
+    "freecad.AIAssistant.rpc_server.settings",
     "freecad.AIAssistant.rpc_server.tools",
     "freecad.AIAssistant.rpc_server.serialize",
     "freecad.AIAssistant.rpc_server.property_mapper",

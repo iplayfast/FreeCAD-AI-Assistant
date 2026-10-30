@@ -22,13 +22,14 @@ import re
 import shutil
 import tempfile
 import threading
+import urllib.parse
 
 import FreeCAD
 
 from .agent import AgentSession, DEFAULT_SYSTEM, INCOMPLETE_STOPS
 from .gui_dispatch import dispatch_to_gui, ensure_gui_pump, post_to_gui
 from .providers import ProviderError, get_json, make_provider, set_wire_logger
-from .settings import load_settings, save_settings
+from .settings import key_location, load_settings, save_settings
 
 _AI_KEYS = ("ai_provider", "ai_model", "ai_base_url", "ai_api_key")
 
@@ -161,7 +162,9 @@ _TERMINALS = (
 def _ai_config() -> dict:
     s = load_settings()
     return {
-        "provider": s.get("ai_provider", "anthropic"),
+        # No default: an unconfigured addon must not pick a cloud service on the
+        # user's behalf. make_provider says so and points at setup.
+        "provider": s.get("ai_provider", ""),
         "model": s.get("ai_model") or None,   # None => provider default
         "base_url": s.get("ai_base_url", ""),
         "api_key": s.get("ai_api_key", ""),
@@ -178,10 +181,63 @@ def _key_source(settings: dict) -> str:
     """
     env = "OPENAI_API_KEY" if settings.get("ai_provider") == "openai_compat" else "ANTHROPIC_API_KEY"
     if settings.get("ai_api_key"):
-        return "settings file"
+        return key_location()
     if os.environ.get(env):
         return f"${env}"
-    return f"NOT SET (checked settings file and ${env})"
+    return f"NOT SET (checked the key store and ${env})"
+
+
+def is_local_endpoint(provider: str, base_url: str) -> bool:
+    """Does this configuration keep the user's design data on this machine?
+
+    The question the user actually cares about, and the one the egress notice
+    below is gated on. Anthropic has no base_url and is never local; an
+    OpenAI-compatible endpoint is local exactly when its host is.
+    """
+    if provider != "openai_compat":
+        return False
+    host = urllib.parse.urlsplit(base_url or "").hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+# Shown once, before the first remote provider is saved. Not a warning for its
+# own sake: a CAD model is the user's design, and "an AI assistant inside
+# FreeCAD" says nothing about where the geometry goes.
+_EGRESS_NOTICE = (
+    "{name} runs on {name}'s servers, not on this computer.\n\n"
+    "Everything the assistant needs to answer is sent there: your prompts, and "
+    "the model data the tools return — object and document names, dimensions, "
+    "sketch coordinates, placements, and any file contents you point it at. "
+    "Screenshots too, if you ask for one.\n\n"
+    "Nothing is sent anywhere until you ask the assistant something, and you "
+    "can keep every byte on this machine instead by choosing a local service "
+    "such as Ollama.\n\n"
+    "Send design data to {name}?"
+)
+
+
+def confirm_remote_provider(name: str, settings: dict) -> bool:
+    """Get (once) the user's informed consent to send design data off-machine.
+
+    Returns True if this configuration keeps data local, if consent was already
+    given, or if the user accepts now. Records the acceptance in ``settings``
+    (the caller saves it), so this asks once rather than on every Save.
+    """
+    if settings.get("ai_remote_ack") or is_local_endpoint(
+            settings.get("ai_provider", ""), settings.get("ai_base_url", "")):
+        return True
+    from PySide import QtWidgets
+
+    answer = QtWidgets.QMessageBox.question(
+        None, "This sends your design data off this computer",
+        _EGRESS_NOTICE.format(name=name),
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+        QtWidgets.QMessageBox.Cancel,
+    )
+    if answer != QtWidgets.QMessageBox.Yes:
+        return False
+    settings["ai_remote_ack"] = True
+    return True
 
 
 def _ask_choice(title: str, label: str, items: list[str], current: str = "") -> str | None:
@@ -202,17 +258,22 @@ def _ask_text(title: str, label: str, default: str = "", secret: bool = False) -
     return value.strip() if ok else None
 
 
-def _has_freecad_mcp(config_path: str) -> bool:
+def _has_freecad_mcp(config_path: str, token: str = "") -> bool:
     """Does this CLI's config register a 'freecad' MCP server?
 
     Substring match, not a parse: the three CLIs use three formats (JSON here,
     TOML there) and all we need to know is whether the entry is present at all.
+
+    With ``token``, the entry also has to carry it — an entry written before the
+    server required a token (or against a rotated one) is registered but gets a
+    403 on every call, so the briefing should still print the snippet to fix it.
     """
     try:
         with open(os.path.expanduser(config_path), encoding="utf-8", errors="replace") as f:
-            return "freecad" in f.read().lower()
+            text = f.read()
     except OSError:
         return False
+    return "freecad" in text.lower() and (not token or token in text)
 
 
 def _addon_dir() -> str:
@@ -450,9 +511,14 @@ def write_briefing(cli: dict = None) -> str:
     when called outside a launch (e.g. by tests).
     """
     from . import tools
-    from .settings import RPC_HOST, RPC_PORT
+    from .settings import RPC_HOST, RPC_PORT, rpc_token
 
-    url = f"http://{RPC_HOST}:{RPC_PORT}"
+    # The path is the access token the server requires. It belongs in the
+    # briefing because the briefing is a local file in the user's own addon
+    # directory — the same trust level as the token file itself — and an agent
+    # that is told the port but not the token can only fail with a 403.
+    token = rpc_token()
+    url = f"http://{RPC_HOST}:{RPC_PORT}/{token}"
     try:
         # GUI-only (it imports FreeCADGui), which is where this is called for
         # real; headless, the port above is still the right thing to publish.
@@ -503,19 +569,25 @@ def write_briefing(cli: dict = None) -> str:
         "in `execute_code`/`execute_code_async` — they exist and work.",
         "",
     ]
-    if cli and cli.get("config") and not _has_freecad_mcp(cli["config"]):
+    if cli and cli.get("config") and not _has_freecad_mcp(cli["config"], token):
         mcp_script = os.path.join(_addon_dir(), "freecad", "AIAssistant", "rpc_server", "mcp_stdio.py")
         is_toml = cli["config"].endswith(".toml")
+        # With the token in the env: this CLI's own launches of the bridge do
+        # not inherit the environment of the FreeCAD session that started it.
         snippet = (
-            f'[mcp_servers.freecad]\ncommand = "python3"\nargs = ["{mcp_script}"]'
+            f'[mcp_servers.freecad]\ncommand = "python3"\nargs = ["{mcp_script}"]\n'
+            f'env = {{ FREECAD_RPC_TOKEN = "{token}" }}'
             if is_toml else
-            f'{{"mcpServers": {{"freecad": {{"command": "python3", "args": ["{mcp_script}"]}}}}}}'
+            f'{{"mcpServers": {{"freecad": {{"command": "python3", '
+            f'"args": ["{mcp_script}"], '
+            f'"env": {{"FREECAD_RPC_TOKEN": "{token}"}}}}}}}}'
         )
         lines += [
-            f"It isn't registered with {cli['name']} yet, so you have no native tools",
-            "and must fall back to the XML-RPC calls below — which works, but every",
-            "call costs you a paragraph of Python instead of one tool call. Registering",
-            f"it is one-time, in {cli['config']}:",
+            f"It isn't registered with {cli['name']} yet (or its entry predates the",
+            "access token the server now requires, which means a 403 on every call),",
+            "so you may have no working native tools and must fall back to the XML-RPC",
+            "calls below — which works, but every call costs you a paragraph of Python",
+            f"instead of one tool call. Fixing it is one-time, in {cli['config']}:",
             "",
             "```" + ("toml" if is_toml else "json"),
             snippet,
@@ -523,10 +595,14 @@ def write_briefing(cli: dict = None) -> str:
             "",
             "Add that, restart this CLI, and `freecad` tools appear directly — no",
             "more XML-RPC needed for the rest of this session, or any future one.",
+            "(This session already has the token in $FREECAD_RPC_TOKEN, so the",
+            "XML-RPC calls below work as they are.)",
             "",
         ]
     lines += [
-        f"Otherwise, talk to the XML-RPC server on **{url}** (loopback only).",
+        f"Otherwise, talk to the XML-RPC server on **{url}** (loopback only;",
+        "the path is this session's access token — treat the URL as a credential",
+        "and do not paste it anywhere public).",
         f"Status at launch: **{'RUNNING' if running else 'NOT RUNNING'}**.",
         "" if running else
         "It is off: the user starts it with 'Launch Agent CLI' on the AI Assistant\n"
@@ -794,8 +870,11 @@ def _launch_cli(cli: dict) -> tuple:
     # Publishing it here means a changed port follows the launch, inherited down
     # the chain (terminal -> wrapper -> CLI -> MCP bridge), with no CLI config
     # to edit.
-    from .settings import RPC_HOST, RPC_PORT
+    from .settings import RPC_HOST, RPC_PORT, rpc_token
     env["FREECAD_RPC_URL"] = f"http://{RPC_HOST}:{RPC_PORT}"
+    # The server authenticates every call; inherited down the same chain, so a
+    # CLI launched from here needs no token in its config either.
+    env["FREECAD_RPC_TOKEN"] = rpc_token()
     addon_dir = _addon_dir()
     script = _wrapper_script(argv, addon_dir)
     for term, flag in _TERMINALS:
@@ -958,16 +1037,21 @@ def _run_wizard(settings: dict) -> bool:
             else:
                 return False
 
+    settings.update({"ai_provider": preset["provider"], "ai_base_url": base_url})
+    # Before the model list, not after: asking a remote provider what models it
+    # offers is itself the first request to it, and consent comes first.
+    if not confirm_remote_provider(name, settings):
+        print(f"[AI_config] cancelled — nothing saved, nothing sent to {name}")
+        return False
+
     model = _ask_model(base_url, api_key, settings.get("ai_model", ""), preset)
     if model is None:
         return False
 
-    settings.update({
-        "ai_provider": preset["provider"], "ai_base_url": base_url,
-        "ai_api_key": api_key, "ai_model": model,
-    })
+    settings.update({"ai_api_key": api_key, "ai_model": model})
     save_settings(settings)
-    print(f"[AI_config] configured {name}")
+    print(f"[AI_config] configured {name}; API key stored in "
+          f"{key_location() or 'nowhere (none given)'}")
     return True
 
 
@@ -1176,19 +1260,39 @@ def AI_config(**kwargs) -> None:
         print(f"[AI_config] ignored unknown option(s): {', '.join(unknown)}")
         print("            valid: provider, model, base_url, api_key")
     settings.update(valid)
+    if settings.get("ai_provider") and not is_local_endpoint(
+            settings.get("ai_provider"), settings.get("ai_base_url", "")):
+        # Naming a remote provider in a call is explicit enough to be consent —
+        # but say what it means, so it is informed as well as explicit, and
+        # record it so the panel does not ask again.
+        print("[AI_config] note: this service runs off this computer. Your prompts "
+              "and the model data the tools return (names, dimensions, sketch "
+              "coordinates, placements) are sent to it.")
+        settings["ai_remote_ack"] = True
     save_settings(settings)
     for key in valid:
         shown = "***set***" if key == "ai_api_key" and valid[key] else valid[key]
         print(f"  {key} = {shown!r}")
+    if "ai_api_key" in valid:
+        print(f"  stored in: {key_location() or 'nowhere (cleared)'}")
 
 
 def register_console_globals() -> None:
-    """Bind AI / AI_config into builtins so they need no import in the console."""
-    import builtins
+    """Put AI / AI_config / AI_verbose in the Python console's own namespace.
 
-    builtins.AI = AI
-    builtins.AI_config = AI_config
-    builtins.AI_verbose = AI_verbose
+    ``__main__``, not ``builtins``: FreeCAD runs console statements and macros in
+    the ``__main__`` module's dict, so this is exactly the scope that wanted
+    them — while ``builtins`` would have added three names to every module in
+    the process, addon or not, which is not an addon's business.
+
+    If a future FreeCAD runs the console somewhere else, the names simply are
+    not there, and the import still works:
+    ``from freecad.AIAssistant.rpc_server.console import AI``.
+    """
+    import __main__
+
+    for func in (AI, AI_config, AI_verbose):
+        setattr(__main__, func.__name__, func)
 
 
 def demo() -> None:
@@ -1197,6 +1301,7 @@ def demo() -> None:
     Needs FreeCAD (settings.py imports it), so run it from the Python console:
       from .console import demo; demo()
     """
+    import secrets
     import shutil
 
     from . import console as m
@@ -1204,12 +1309,19 @@ def demo() -> None:
     from .settings import RPC_HOST, RPC_PORT
 
     real = (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
-            m._offer_no_key, m._launch_cli, m._open_keys_page)
+            m._offer_no_key, m._launch_cli, m._open_keys_page,
+            m.confirm_remote_provider)
     saved: list[dict] = []
     launched: list[dict] = []
     m.save_settings = saved.append
     m._launch_cli = launched.append      # never spawn a real terminal in a test
     m._open_keys_page = lambda: None     # never open a real browser in a test
+
+    def accept_egress(name, settings):   # the user clicking through the notice
+        settings["ai_remote_ack"] = True
+        return True
+
+    m.confirm_remote_provider = accept_egress
 
     def scripted(choices: list, texts: list):
         m._ask_choice = lambda *a, **k: choices.pop(0)
@@ -1222,8 +1334,28 @@ def demo() -> None:
         assert m._run_wizard({}) is True
         assert saved[-1] == {
             "ai_provider": "anthropic", "ai_base_url": "", "ai_api_key": "sk-test",
-            "ai_model": "claude-sonnet-5",
+            "ai_model": "claude-sonnet-5", "ai_remote_ack": True,
         }, saved[-1]
+
+        # Declining the data-egress notice: nothing saved, and the wizard never
+        # got as far as asking the provider for its model list.
+        before_ack = len(saved)
+        m.confirm_remote_provider = lambda name, settings: False
+        scripted(["Claude (Anthropic)"], ["sk-test"])
+        assert m._run_wizard({}) is False
+        assert len(saved) == before_ack, "a declined notice must save nothing"
+        m.confirm_remote_provider = accept_egress
+
+        # Which endpoints that notice is shown for at all.
+        assert m.is_local_endpoint("openai_compat", "http://localhost:11434/v1")
+        assert m.is_local_endpoint("openai_compat", "http://127.0.0.1:8080/v1")
+        assert not m.is_local_endpoint("openai_compat", "https://api.openai.com/v1")
+        assert not m.is_local_endpoint("anthropic", "")
+        # Already acknowledged, or local: no dialog, hence no PySide import.
+        assert m.confirm_remote_provider("X", {"ai_remote_ack": True}) is True
+        assert m.confirm_remote_provider("X", {
+            "ai_provider": "openai_compat",
+            "ai_base_url": "http://localhost:11434/v1"}) is True
 
         # Ollama: no key prompt, models listed live from /models.
         m.get_json = lambda url, *a, **k: (
@@ -1368,6 +1500,10 @@ def demo() -> None:
         assert m._has_freecad_mcp("~/.claude.json") is True
         assert m._has_freecad_mcp(__file__) is True          # this file says "freecad"
         assert m._has_freecad_mcp("/nonexistent/xyz.json") is False
+        # An entry registered without the current token is as good as absent:
+        # it would 403 on every call, so the briefing must still offer the fix.
+        # (a fresh random token, which by construction is not written anywhere)
+        assert m._has_freecad_mcp(__file__, secrets.token_urlsafe(24)) is False
 
         # The free-form row is always offered; the named CLIs only when installed,
         # so assert the shape rather than which ones this machine happens to have.
@@ -1425,6 +1561,17 @@ def demo() -> None:
         briefing_path = m.write_briefing()
         text = open(briefing_path, encoding="utf-8").read()
         assert f"{RPC_HOST}:{RPC_PORT}" in text, "briefing must name the port"
+        # ...and the token, or every call the agent makes gets a 403.
+        from .settings import rpc_token
+        assert f"{RPC_PORT}/{rpc_token()}" in text, "briefing must carry the token"
+
+        # The console helpers go in the console's namespace, not into every
+        # module in the process.
+        import __main__
+        import builtins
+        m.register_console_globals()
+        assert __main__.AI is m.AI and __main__.AI_config is m.AI_config
+        assert not hasattr(builtins, "AI"), "builtins must stay clean"
 
         # The opening prompt must point at the briefing by absolute path: a CLI
         # that does not start in the addon directory cannot resolve a bare name,
@@ -1501,7 +1648,8 @@ def demo() -> None:
         assert "PARAMETRIC" in text and "Build with the tools above, not with Python" in text
     finally:
         (m._ask_choice, m._ask_text, m.get_json, m.save_settings,
-         m._offer_no_key, m._launch_cli, m._open_keys_page) = real
+         m._offer_no_key, m._launch_cli, m._open_keys_page,
+         m.confirm_remote_provider) = real
 
     # The skill the addon ships, and what the Install button does with it.
     assert os.path.isfile(os.path.join(skill_source(), "SKILL.md")), \
